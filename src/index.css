@@ -1508,6 +1508,56 @@ select.input-base option {
   100% { transform: translateY(-6px); }
 }
 
+.reticle-arrow {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--accent-rose);
+  filter: drop-shadow(0 0 4px rgba(244, 63, 94, 0.8));
+  animation: bounceReticle 1s ease-in-out infinite;
+}
+
+@keyframes bounceReticle {
+  0%, 100% { transform: translate(-50%, 0); }
+  50% { transform: translate(-50%, 4px); }
+}
+
+/* ==========================================================================
+   PREMIUM DAMAGE CALCULATOR REDESIGN
+   ========================================================================== */
+
+.hero-result-card {
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.8), rgba(5, 5, 8, 0.95));
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.6), inset 0 0 20px rgba(99, 102, 241, 0.1);
+  border-radius: 24px;
+}
+
+.hero-result-card::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.05) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.config-panel {
+  background: rgba(16, 18, 27, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.3s ease;
+}
+
+.config-panel:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+
 .hp-bar-container {
   flex: 1;
   min-width: 250px;

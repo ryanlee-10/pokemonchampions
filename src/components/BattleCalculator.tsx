@@ -406,9 +406,204 @@ export const BattleCalculator: React.FC<BattleCalculatorProps> = ({ playerTeam =
 
       {/* Main 1v1 View: Attacker, Damage Verdict, Defender */}
       {calcMode === '1v1' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        <div className="flex flex-col gap-6">
+          {/* HERO SECTION: The Result */}
+          {/* MIDDLE: Damage Output & Visual Gauge (4 Cols) */}
+          <div className={`calc-card hero-result-card p-8 space-y-6 ${singleCalcResult.koVerdict === 'Guaranteed OHKO' ? 'result-card-pulse border-rose-500/50' : 'border-indigo-500/40 bg-gradient-to-b from-indigo-950/40 to-slate-900/80'}`}>
+            <div className="text-center pb-2 border-b border-glass">
+              <span className="text-[11px] font-extrabold tracking-widest text-slate-400 uppercase">
+                Damage Calculation
+              </span>
+              <h3 className="font-black text-lg text-white mt-0.5">
+                {attackerSpecies.name}’s {activeMove.name}
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                vs. {defenderSpecies.name} ({defenderEvs.hp} HP / {defenderEvs.defense} Def / {defenderEvs.spDef} SpD)
+              </p>
+            </div>
+
+            {/* Massive Numbers Display */}
+            <div className="text-center py-2 bg-slate-950/70 rounded-2xl border border-glass space-y-1 shadow-inner">
+              <div className="text-3xl font-black text-white tracking-wide">
+                {singleCalcResult.minDamage} – {singleCalcResult.maxDamage}
+              </div>
+              <div className="text-lg font-extrabold text-sky-400">
+                ({singleCalcResult.minPercent}% – {singleCalcResult.maxPercent}%)
+              </div>
+
+              {/* KO Verdict Badge */}
+              <div className="pt-2">
+                <span
+                  style={{
+                    display: 'inline-block',
+                    padding: '0.35rem 1rem',
+                    borderRadius: '9999px',
+                    fontSize: '0.85rem',
+                    fontWeight: 900,
+                    ...getVerdictBadgeStyle(singleCalcResult.koVerdict)
+                  }}
+                >
+                  {singleCalcResult.koVerdict}
+                </span>
+              </div>
+            </div>
+
+            {/* Defender HP Interactive Bar Gauge */}
+            <div className="space-y-1.5 bg-slate-950/50 p-3 rounded-xl border border-glass">
+              <div className="flex justify-between items-center text-xs mb-1">
+                <span className="font-bold text-slate-300">Defender HP Impact:</span>
+                <span className="font-mono text-slate-400 font-bold">{defMaxHp} Max HP</span>
+              </div>
+
+              {/* Advanced HP Bar with Custom CSS */}
+              <div className="damage-bar-track relative">
+                {/* Remaining Min Bar */}
+                <div
+                  className={`damage-bar-fill ${remMaxPct <= 0 ? 'bg-slate-700' : remMaxPct < 25 ? 'ohko' : remMaxPct < 50 ? 'high' : 'low'}`}
+                  style={{ width: `${Math.max(0, Math.min(100, remMaxPct))}%` }}
+                />
+                {/* Damage Chunk Highlight */}
+                <div
+                  className="absolute top-0 bottom-0 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.8)] border-l border-white/40"
+                  style={{
+                    left: `${Math.max(0, Math.min(100, remMinPct))}%`,
+                    width: `${Math.max(0, Math.min(100, remMaxPct - remMinPct))}%`
+                  }}
+                />
+              </div>
+
+              <div className="flex justify-between items-center text-[11px] text-slate-300 font-medium">
+                <span>Remaining after hit:</span>
+                <span className="font-mono font-bold text-amber-300">
+                  {remMinHp} – {remMaxHp} HP ({remMinPct}% – {remMaxPct}%)
+                </span>
+              </div>
+            </div>
+
+            {/* 16 Discrete Damage Rolls */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-xs">
+                <span className="font-bold text-slate-300">16 Discrete Damage Rolls:</span>
+                <span className="text-[10px] text-emerald-400 font-bold">Green = KOs Target</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {singleCalcResult.rolls.map((roll, idx) => {
+                  const isKo = roll >= defMaxHp;
+                  return (
+                    <div
+                      key={idx}
+                      className={`text-center py-1 rounded text-xs font-mono font-extrabold border transition-all ${
+                        isKo
+                          ? 'bg-emerald-950/70 border-emerald-500 text-emerald-300 shadow-sm'
+                          : 'bg-slate-950/80 border-glass text-slate-300'
+                      }`}
+                    >
+                      {roll}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Environmental / Field Conditions */}
+            <div className="pt-2 border-t border-glass space-y-2">
+              <span className="text-xs font-bold text-slate-300 block">Battle Conditions & Weather</span>
+              <div className="flex flex-wrap gap-1.5">
+                {(['None', 'Sun', 'Rain', 'Sandstorm', 'Snow'] as const).map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => setField({ ...field, weather: w === 'None' ? undefined : w })}
+                    className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition-all ${
+                      (field.weather === w || (!field.weather && w === 'None'))
+                        ? 'bg-indigo-600 border-indigo-400 text-white'
+                        : 'bg-slate-950/60 border-glass text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {(['None', 'Electric', 'Grassy', 'Psychic', 'Misty'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setField({ ...field, terrain: t === 'None' ? undefined : t })}
+                    className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition-all ${
+                      (field.terrain === t || (!field.terrain && t === 'None'))
+                        ? 'bg-emerald-700 border-emerald-400 text-white'
+                        : 'bg-slate-950/60 border-glass text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {t} Terrain
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-1.5 pt-1">
+                <button
+                  onClick={() => setField({ ...field, reflect: !field.reflect })}
+                  className={`text-[10px] font-bold px-2 py-1 rounded-lg border flex-1 transition-all ${
+                    field.reflect ? 'bg-amber-600 border-amber-400 text-white' : 'bg-slate-950/60 border-glass text-slate-400'
+                  }`}
+                >
+                  Reflect
+                </button>
+                <button
+                  onClick={() => setField({ ...field, lightScreen: !field.lightScreen })}
+                  className={`text-[10px] font-bold px-2 py-1 rounded-lg border flex-1 transition-all ${
+                    field.lightScreen ? 'bg-cyan-600 border-cyan-400 text-white' : 'bg-slate-950/60 border-glass text-slate-400'
+                  }`}
+                >
+                  Light Screen
+                </button>
+                <button
+                  onClick={() => setField({ ...field, auroraVeil: !field.auroraVeil })}
+                  className={`text-[10px] font-bold px-2 py-1 rounded-lg border flex-1 transition-all ${
+                    field.auroraVeil ? 'bg-purple-600 border-purple-400 text-white' : 'bg-slate-950/60 border-glass text-slate-400'
+                  }`}
+                >
+                  Aurora Veil
+                </button>
+              </div>
+            </div>
+
+            {/* Other moves comparison against this exact Defender */}
+            <div className="pt-2 border-t border-glass space-y-1.5">
+              <span className="text-xs font-bold text-slate-300 block">All Learnset Attacks vs. this Spread:</span>
+              <div className="space-y-1 max-h-36 overflow-y-auto">
+                {attackerMovesetResults.map(({ move, result }) => (
+                  <div
+                    key={move.id}
+                    onClick={() => setSelectedMoveId(move.id)}
+                    className={`p-2 rounded-xl border flex justify-between items-center cursor-pointer transition-all ${
+                      selectedMoveId === move.id
+                        ? 'bg-indigo-950 border-indigo-400'
+                        : 'bg-slate-950/60 border-glass hover:bg-slate-900'
+                    }`}
+                  >
+                    <div>
+                      <div className="text-xs font-bold text-white">{move.name}</div>
+                      <div className="text-[10px] text-slate-400">{move.type} • {move.category}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs font-mono font-bold text-sky-300">
+                        {result.minPercent}% – {result.maxPercent}%
+                      </div>
+                      <div className="text-[10px] font-bold" style={{ color: getVerdictBadgeStyle(result.koVerdict).text }}>
+                        {result.koVerdict}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* LEFT: Attacker Column (4 Cols) */}
-          <div className="lg:col-span-4 calc-card space-y-4 pb-4">
+          <div className="config-panel glass-panel rounded-2xl p-6 relative overflow-hidden space-y-4 pb-4">
             <div className="calc-header flex justify-between items-center">
               <h3 className="font-extrabold text-sm text-indigo-400 flex items-center gap-1.5">
                 <Swords size={16} /> Attacker (Offense)
@@ -736,200 +931,8 @@ export const BattleCalculator: React.FC<BattleCalculatorProps> = ({ playerTeam =
             </div>
           </div>
 
-          {/* MIDDLE: Damage Output & Visual Gauge (4 Cols) */}
-          <div className={`lg:col-span-4 calc-card p-5 space-y-4 ${singleCalcResult.koVerdict === 'Guaranteed OHKO' ? 'result-card-pulse border-rose-500/50' : 'border-indigo-500/40 bg-gradient-to-b from-indigo-950/40 to-slate-900/80'}`}>
-            <div className="text-center pb-2 border-b border-glass">
-              <span className="text-[11px] font-extrabold tracking-widest text-slate-400 uppercase">
-                Damage Calculation
-              </span>
-              <h3 className="font-black text-lg text-white mt-0.5">
-                {attackerSpecies.name}’s {activeMove.name}
-              </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
-                vs. {defenderSpecies.name} ({defenderEvs.hp} HP / {defenderEvs.defense} Def / {defenderEvs.spDef} SpD)
-              </p>
-            </div>
-
-            {/* Massive Numbers Display */}
-            <div className="text-center py-2 bg-slate-950/70 rounded-2xl border border-glass space-y-1 shadow-inner">
-              <div className="text-3xl font-black text-white tracking-wide">
-                {singleCalcResult.minDamage} – {singleCalcResult.maxDamage}
-              </div>
-              <div className="text-lg font-extrabold text-sky-400">
-                ({singleCalcResult.minPercent}% – {singleCalcResult.maxPercent}%)
-              </div>
-
-              {/* KO Verdict Badge */}
-              <div className="pt-2">
-                <span
-                  style={{
-                    display: 'inline-block',
-                    padding: '0.35rem 1rem',
-                    borderRadius: '9999px',
-                    fontSize: '0.85rem',
-                    fontWeight: 900,
-                    ...getVerdictBadgeStyle(singleCalcResult.koVerdict)
-                  }}
-                >
-                  {singleCalcResult.koVerdict}
-                </span>
-              </div>
-            </div>
-
-            {/* Defender HP Interactive Bar Gauge */}
-            <div className="space-y-1.5 bg-slate-950/50 p-3 rounded-xl border border-glass">
-              <div className="flex justify-between items-center text-xs mb-1">
-                <span className="font-bold text-slate-300">Defender HP Impact:</span>
-                <span className="font-mono text-slate-400 font-bold">{defMaxHp} Max HP</span>
-              </div>
-
-              {/* Advanced HP Bar with Custom CSS */}
-              <div className="damage-bar-track relative">
-                {/* Remaining Min Bar */}
-                <div
-                  className={`damage-bar-fill ${remMaxPct <= 0 ? 'bg-slate-700' : remMaxPct < 25 ? 'ohko' : remMaxPct < 50 ? 'high' : 'low'}`}
-                  style={{ width: `${Math.max(0, Math.min(100, remMaxPct))}%` }}
-                />
-                {/* Damage Chunk Highlight */}
-                <div
-                  className="absolute top-0 bottom-0 bg-rose-500/80 shadow-[0_0_10px_rgba(244,63,94,0.8)] border-l border-white/40"
-                  style={{
-                    left: `${Math.max(0, Math.min(100, remMinPct))}%`,
-                    width: `${Math.max(0, Math.min(100, singleCalcResult.maxPercent - remMinPct))}%`
-                  }}
-                />
-              </div>
-
-              <div className="flex justify-between items-center text-[11px] text-slate-300 font-medium">
-                <span>Remaining after hit:</span>
-                <span className="font-mono font-bold text-amber-300">
-                  {remMinHp} – {remMaxHp} HP ({remMinPct}% – {remMaxPct}%)
-                </span>
-              </div>
-            </div>
-
-            {/* 16 Discrete Damage Rolls */}
-            <div className="space-y-1.5">
-              <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-slate-300">16 Discrete Damage Rolls:</span>
-                <span className="text-[10px] text-emerald-400 font-bold">Green = KOs Target</span>
-              </div>
-              <div className="grid grid-cols-4 gap-1.5">
-                {singleCalcResult.rolls.map((roll, idx) => {
-                  const isKo = roll >= defMaxHp;
-                  return (
-                    <div
-                      key={idx}
-                      className={`text-center py-1 rounded text-xs font-mono font-extrabold border transition-all ${
-                        isKo
-                          ? 'bg-emerald-950/70 border-emerald-500 text-emerald-300 shadow-sm'
-                          : 'bg-slate-950/80 border-glass text-slate-300'
-                      }`}
-                    >
-                      {roll}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Environmental / Field Conditions */}
-            <div className="pt-2 border-t border-glass space-y-2">
-              <span className="text-xs font-bold text-slate-300 block">Battle Conditions & Weather</span>
-              <div className="flex flex-wrap gap-1.5">
-                {(['None', 'Sun', 'Rain', 'Sandstorm', 'Snow'] as const).map((w) => (
-                  <button
-                    key={w}
-                    onClick={() => setField({ ...field, weather: w === 'None' ? undefined : w })}
-                    className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition-all ${
-                      (field.weather === w || (!field.weather && w === 'None'))
-                        ? 'bg-indigo-600 border-indigo-400 text-white'
-                        : 'bg-slate-950/60 border-glass text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {w}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {(['None', 'Electric', 'Grassy', 'Psychic', 'Misty'] as const).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setField({ ...field, terrain: t === 'None' ? undefined : t })}
-                    className={`text-[10px] font-bold px-2 py-1 rounded-lg border transition-all ${
-                      (field.terrain === t || (!field.terrain && t === 'None'))
-                        ? 'bg-emerald-700 border-emerald-400 text-white'
-                        : 'bg-slate-950/60 border-glass text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {t} Terrain
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex gap-1.5 pt-1">
-                <button
-                  onClick={() => setField({ ...field, reflect: !field.reflect })}
-                  className={`text-[10px] font-bold px-2 py-1 rounded-lg border flex-1 transition-all ${
-                    field.reflect ? 'bg-amber-600 border-amber-400 text-white' : 'bg-slate-950/60 border-glass text-slate-400'
-                  }`}
-                >
-                  Reflect
-                </button>
-                <button
-                  onClick={() => setField({ ...field, lightScreen: !field.lightScreen })}
-                  className={`text-[10px] font-bold px-2 py-1 rounded-lg border flex-1 transition-all ${
-                    field.lightScreen ? 'bg-cyan-600 border-cyan-400 text-white' : 'bg-slate-950/60 border-glass text-slate-400'
-                  }`}
-                >
-                  Light Screen
-                </button>
-                <button
-                  onClick={() => setField({ ...field, auroraVeil: !field.auroraVeil })}
-                  className={`text-[10px] font-bold px-2 py-1 rounded-lg border flex-1 transition-all ${
-                    field.auroraVeil ? 'bg-purple-600 border-purple-400 text-white' : 'bg-slate-950/60 border-glass text-slate-400'
-                  }`}
-                >
-                  Aurora Veil
-                </button>
-              </div>
-            </div>
-
-            {/* Other moves comparison against this exact Defender */}
-            <div className="pt-2 border-t border-glass space-y-1.5">
-              <span className="text-xs font-bold text-slate-300 block">All Learnset Attacks vs. this Spread:</span>
-              <div className="space-y-1 max-h-36 overflow-y-auto">
-                {attackerMovesetResults.map(({ move, result }) => (
-                  <div
-                    key={move.id}
-                    onClick={() => setSelectedMoveId(move.id)}
-                    className={`p-2 rounded-xl border flex justify-between items-center cursor-pointer transition-all ${
-                      selectedMoveId === move.id
-                        ? 'bg-indigo-950 border-indigo-400'
-                        : 'bg-slate-950/60 border-glass hover:bg-slate-900'
-                    }`}
-                  >
-                    <div>
-                      <div className="text-xs font-bold text-white">{move.name}</div>
-                      <div className="text-[10px] text-slate-400">{move.type} • {move.category}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-xs font-mono font-bold text-sky-300">
-                        {result.minPercent}% – {result.maxPercent}%
-                      </div>
-                      <div className="text-[10px] font-bold" style={{ color: getVerdictBadgeStyle(result.koVerdict).text }}>
-                        {result.koVerdict}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
           {/* RIGHT: Defender Column (4 Cols) */}
-          <div className="lg:col-span-4 calc-card space-y-4 pb-4">
+          <div className="config-panel glass-panel rounded-2xl p-6 relative overflow-hidden space-y-4 pb-4">
             <div className="calc-header flex justify-between items-center">
               <h3 className="font-extrabold text-sm text-sky-400 flex items-center gap-1.5">
                 <Shield size={16} /> Defender (Target)
@@ -1168,6 +1171,7 @@ export const BattleCalculator: React.FC<BattleCalculatorProps> = ({ playerTeam =
                 </div>
               ))}
             </div>
+          </div>
           </div>
         </div>
       )}

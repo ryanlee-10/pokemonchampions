@@ -47,6 +47,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         ability: p.ability,
         maxStats: stats,
         currentHp: stats.hp,
+        originalEvs: p.evs,
+        originalNature: p.nature,
         statStages: { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0, accuracy: 0, evasion: 0 },
         moves: p.moves.map((mId) => {
           const moveObj = MOVES_DATABASE[mId] || MOVES_DATABASE['protect'];
@@ -344,9 +346,33 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     let nextOppTeam = [...opponentTeamState];
     let activeField: BattleFieldConditions = { ...fieldConditions };
 
-    const getEffectiveSpeed = (pkmn: ActivePokemonState | undefined, isPlayer: boolean): number => {
+    const getEffectiveSpeed = (pkmn: ActivePokemonState | undefined, isPlayer: boolean, action?: BattleAction): number => {
       if (!pkmn) return 0;
-      let spd = pkmn.maxStats.speed * ((pkmn.statStages?.speed && pkmn.statStages.speed !== 0) ? (pkmn.statStages.speed > 0 ? (2 + pkmn.statStages.speed) / 2 : 2 / (2 - pkmn.statStages.speed)) : 1);
+
+      let baseSpeed = pkmn.maxStats.speed;
+      
+      // Look ahead for Mega Evolution speed update
+      if (action?.megaEvolve && !pkmn.isMegaEvolved && pkmn.species.megaForm) {
+        const megaForms = Array.isArray(pkmn.species.megaForm) ? pkmn.species.megaForm : [pkmn.species.megaForm];
+        const matchingMega = megaForms.find((mf) => mf.megaStoneId === pkmn.item);
+        if (matchingMega) {
+          const megaSpecies = { ...pkmn.species, baseStats: matchingMega.megaBaseStats };
+          const dummyCustom = {
+            id: pkmn.instanceId,
+            speciesId: pkmn.species.id,
+            nickname: pkmn.nickname,
+            level: pkmn.level,
+            item: pkmn.item,
+            ability: matchingMega.megaAbility,
+            nature: pkmn.originalNature || 'Hardy',
+            evs: pkmn.originalEvs || { hp: 0, attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 },
+            moves: []
+          };
+          baseSpeed = calculateAllStats(dummyCustom, megaSpecies).speed;
+        }
+      }
+
+      let spd = baseSpeed * ((pkmn.statStages?.speed && pkmn.statStages.speed !== 0) ? (pkmn.statStages.speed > 0 ? (2 + pkmn.statStages.speed) / 2 : 2 / (2 - pkmn.statStages.speed)) : 1);
       if (pkmn.status === 'Paralysis' && pkmn.ability !== 'Quick Feet') {
         spd = Math.floor(spd * 0.5);
       }
@@ -386,7 +412,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       allActions.push({
         action: act,
         isMyAction: true,
-        speed: getEffectiveSpeed(actorPkmn, true),
+        speed: getEffectiveSpeed(actorPkmn, true, act),
         priority
       });
     });
@@ -402,7 +428,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       allActions.push({
         action: act,
         isMyAction: false,
-        speed: getEffectiveSpeed(actorPkmn, false),
+        speed: getEffectiveSpeed(actorPkmn, false, act),
         priority
       });
     });
@@ -452,8 +478,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
             level: attacker.level,
             item: attacker.item,
             ability: matchingMega.megaAbility,
-            nature: 'Hardy',
-            evs: { hp: 0, attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 },
+            nature: attacker.originalNature || 'Hardy',
+            evs: attacker.originalEvs || { hp: 0, attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 },
             moves: []
           };
           attacker.maxStats = calculateAllStats(dummyCustom, megaSpecies);

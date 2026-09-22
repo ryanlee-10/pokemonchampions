@@ -109,6 +109,9 @@ export interface ActivePokemonState {
   // Stats calculated for battle at level 50
   maxStats: StatBlock;
   currentHp: number;
+  originalEvs?: StatBlock;
+  originalIvs?: Partial<StatBlock>;
+  originalNature?: string;
   
   // In-battle dynamic modifiers
   statStages: {
