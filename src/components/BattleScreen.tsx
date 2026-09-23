@@ -244,7 +244,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       if (nextLog) {
         setActiveLogMessage(nextLog);
         setBattleLog(prev => [...prev, nextLog]);
-        await new Promise(r => setTimeout(r, 2000)); // Show each log for 2 seconds
+        await new Promise(r => setTimeout(r, 750)); // Show each log for 0.75 seconds
       }
     }
     setActiveLogMessage(null);
@@ -1274,62 +1274,6 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           <ArrowLeft size={16} /> Exit / Back to Lobby
         </button>
         <div className="battle-title font-bold text-base flex items-center gap-2 flex-wrap justify-end">
-          {/* Weather Badge */}
-          {fieldConditions.weather && fieldConditions.weather !== 'Clear' && (
-            <span
-              style={{
-                backgroundColor:
-                  fieldConditions.weather === 'Sun' ? 'rgba(234, 88, 12, 0.25)' :
-                  fieldConditions.weather === 'Rain' ? 'rgba(37, 99, 235, 0.25)' :
-                  fieldConditions.weather === 'Sandstorm' ? 'rgba(217, 119, 6, 0.25)' : 'rgba(147, 197, 253, 0.25)',
-                border: `1px solid ${
-                  fieldConditions.weather === 'Sun' ? '#f97316' :
-                  fieldConditions.weather === 'Rain' ? '#3b82f6' :
-                  fieldConditions.weather === 'Sandstorm' ? '#f59e0b' : '#60a5fa'}`,
-                color: '#fff',
-                borderRadius: '9999px',
-                padding: '0.2rem 0.6rem',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem'
-              }}
-            >
-              {fieldConditions.weather === 'Sun' ? '☀️ Harsh Sun' :
-               fieldConditions.weather === 'Rain' ? '🌧️ Heavy Rain' :
-               fieldConditions.weather === 'Sandstorm' ? '⏳ Sandstorm' : '🌨️ Snow'} ({fieldConditions.weatherTurns || 5}t)
-            </span>
-          )}
-
-          {/* Terrain Badge */}
-          {fieldConditions.terrain && fieldConditions.terrain !== 'None' && (
-            <span
-              style={{
-                backgroundColor:
-                  fieldConditions.terrain === 'Electric' ? 'rgba(234, 179, 8, 0.25)' :
-                  fieldConditions.terrain === 'Grassy' ? 'rgba(34, 197, 94, 0.25)' :
-                  fieldConditions.terrain === 'Psychic' ? 'rgba(168, 85, 247, 0.25)' : 'rgba(236, 72, 153, 0.25)',
-                border: `1px solid ${
-                  fieldConditions.terrain === 'Electric' ? '#eab308' :
-                  fieldConditions.terrain === 'Grassy' ? '#22c55e' :
-                  fieldConditions.terrain === 'Psychic' ? '#a855f7' : '#ec4899'}`,
-                color: '#fff',
-                borderRadius: '9999px',
-                padding: '0.2rem 0.6rem',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem'
-              }}
-            >
-              {fieldConditions.terrain === 'Electric' ? '⚡ Electric Terrain' :
-               fieldConditions.terrain === 'Grassy' ? '🌿 Grassy Terrain' :
-               fieldConditions.terrain === 'Psychic' ? '🔮 Psychic Terrain' : '🌫️ Misty Terrain'} ({fieldConditions.terrainTurns || 5}t)
-            </span>
-          )}
-
           <span>Pokémon Champions ({format})</span>
           <span className="room-badge">{roomId}</span>
           <button
@@ -1346,6 +1290,73 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       {/* 2.5D Battle Arena View */}
       <div className="battle-field-arena w-full relative">
         <div className="arena-stadium-lights" />
+
+        {/* Weather & Terrain Corner Badges */}
+        <div className="absolute top-4 right-4 z-40 flex flex-col gap-2 items-end">
+          {/* Weather Badge */}
+          {fieldConditions.weather && fieldConditions.weather !== 'Clear' && (
+            <div
+              className="animate-in fade-in slide-in-from-right-4"
+              style={{
+                backgroundColor:
+                  fieldConditions.weather === 'Sun' ? 'rgba(239, 68, 68, 0.35)' :
+                  fieldConditions.weather === 'Rain' ? 'rgba(59, 130, 246, 0.35)' :
+                  fieldConditions.weather === 'Sandstorm' ? 'rgba(217, 119, 6, 0.35)' : 'rgba(148, 163, 184, 0.35)',
+                border: `1px solid ${
+                  fieldConditions.weather === 'Sun' ? '#ef4444' :
+                  fieldConditions.weather === 'Rain' ? '#3b82f6' :
+                  fieldConditions.weather === 'Sandstorm' ? '#d97706' : '#94a3b8'}`,
+                color: '#fff',
+                borderRadius: '0.75rem',
+                padding: '0.5rem 0.75rem',
+                fontSize: '0.85rem',
+                fontWeight: 800,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)'
+              }}
+            >
+              {fieldConditions.weather === 'Sun' ? '☀️ Harsh Sun' :
+               fieldConditions.weather === 'Rain' ? '🌧️ Heavy Rain' :
+               fieldConditions.weather === 'Sandstorm' ? '⏳ Sandstorm' : '🌨️ Snow'} 
+              <span className="opacity-80 font-semibold">({fieldConditions.weatherTurns || 5}t)</span>
+            </div>
+          )}
+
+          {/* Terrain Badge */}
+          {fieldConditions.terrain && fieldConditions.terrain !== 'None' && (
+            <div
+              className="animate-in fade-in slide-in-from-right-4"
+              style={{
+                backgroundColor:
+                  fieldConditions.terrain === 'Electric' ? 'rgba(234, 179, 8, 0.35)' :
+                  fieldConditions.terrain === 'Grassy' ? 'rgba(34, 197, 94, 0.35)' :
+                  fieldConditions.terrain === 'Psychic' ? 'rgba(168, 85, 247, 0.35)' : 'rgba(236, 72, 153, 0.35)',
+                border: `1px solid ${
+                  fieldConditions.terrain === 'Electric' ? '#eab308' :
+                  fieldConditions.terrain === 'Grassy' ? '#22c55e' :
+                  fieldConditions.terrain === 'Psychic' ? '#a855f7' : '#ec4899'}`,
+                color: '#fff',
+                borderRadius: '0.75rem',
+                padding: '0.5rem 0.75rem',
+                fontSize: '0.85rem',
+                fontWeight: 800,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)'
+              }}
+            >
+              {fieldConditions.terrain === 'Electric' ? '⚡ Electric Terrain' :
+               fieldConditions.terrain === 'Grassy' ? '🌿 Grassy Terrain' :
+               fieldConditions.terrain === 'Psychic' ? '🔮 Psychic Terrain' : '🌫️ Misty Terrain'}
+              <span className="opacity-80 font-semibold">({fieldConditions.terrainTurns || 5}t)</span>
+            </div>
+          )}
+        </div>
 
         {/* Floating Active Log Banner (Top) */}
         {activeLogMessage && (
