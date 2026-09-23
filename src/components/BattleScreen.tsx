@@ -461,7 +461,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     };
 
     // Combine actions and sort by priority & speed
-    const allActions: { action: BattleAction; isMyAction: boolean; speed: number; priority: number }[] = [];
+    const allActions: { action: BattleAction; isMyAction: boolean; speed: number; priority: number; randomTiebreaker: number }[] = [];
 
     myActs.forEach((act) => {
       const actualSlotIdx = alivePlayerActiveIndices[act.actorIndex] ?? hostActiveSlots[act.actorIndex];
@@ -475,7 +475,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         action: act,
         isMyAction: true,
         speed: getEffectiveSpeed(actorPkmn, true, act),
-        priority
+        priority,
+        randomTiebreaker: Math.random()
       });
     });
 
@@ -491,17 +492,24 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         action: act,
         isMyAction: false,
         speed: getEffectiveSpeed(actorPkmn, false, act),
-        priority
+        priority,
+        randomTiebreaker: Math.random()
       });
     });
 
-    // Sort by priority desc, then speed desc (or asc in Trick Room)
+    // Sort by priority desc, then speed desc (or asc in Trick Room), then random tiebreaker
     allActions.sort((a, b) => {
       if (b.priority !== a.priority) return b.priority - a.priority;
+      
+      let speedDiff = b.speed - a.speed;
       if (activeField.trickRoom && activeField.trickRoom > 0) {
-        return a.speed - b.speed;
+        speedDiff = a.speed - b.speed;
       }
-      return b.speed - a.speed;
+      
+      if (speedDiff === 0) {
+        return b.randomTiebreaker - a.randomTiebreaker;
+      }
+      return speedDiff;
     });
 
     // Execute actions sequentially
