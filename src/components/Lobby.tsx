@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import type { BattleFormat, CustomPokemon, PlayerTeam } from '../types/pokemon';
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { peerManager } from '../network/peerManager';
-import { Swords, Users, Copy, Check, Sparkles, ArrowLeft, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Swords, Users, Copy, Check, Sparkles, ArrowLeft, ShieldCheck, AlertTriangle, Dices, Crown } from 'lucide-react';
 
 
 interface LobbyProps {
@@ -27,6 +27,7 @@ export const Lobby: React.FC<LobbyProps> = ({
   onStartGame
 }) => {
   const [roomCode, setRoomCode] = useState<string>('');
+  const [customHostCode, setCustomHostCode] = useState<string>('');
   const [joinCodeInput, setJoinCodeInput] = useState<string>('');
   const [connectionStatus, setConnectionStatus] = useState<
     'IDLE' | 'HOSTING' | 'CONNECTING' | 'CONNECTED'
@@ -44,13 +45,18 @@ export const Lobby: React.FC<LobbyProps> = ({
   const duplicateItemIds = Object.keys(itemCounts).filter((id) => itemCounts[id] > 1);
   const isItemClauseValid = duplicateItemIds.length === 0;
 
-
   const generateRoomCode = () => {
     return 'CHAMP-' + Math.floor(1000 + Math.random() * 9000);
   };
 
+  const handleRandomizeHostCode = () => {
+    setCustomHostCode(generateRoomCode());
+  };
+
   const handleCreateRoom = async () => {
-    const code = generateRoomCode();
+    const rawCode = customHostCode.trim();
+    // Allow custom alphanumeric codes with dashes/underscores, or fallback to auto-generated
+    const code = rawCode ? rawCode.toUpperCase().replace(/[^A-Z0-9\-_]/g, '') : generateRoomCode();
     setRoomCode(code);
     setConnectionStatus('HOSTING');
     setErrorMessage('');
@@ -84,11 +90,26 @@ export const Lobby: React.FC<LobbyProps> = ({
     setErrorMessage('');
 
     try {
-      await peerManager.init();
+      await peerManager.init(
+        undefined,
+        undefined,
+        (msg) => {
+          if (msg.type === 'GAME_START') {
+            if (msg.payload?.format && msg.payload.format !== format) {
+              onFormatChange(msg.payload.format);
+            }
+            onStartGame(false, targetCode);
+          }
+        },
+        () => {
+          setConnectionStatus('IDLE');
+          setErrorMessage('Disconnected from host.');
+        }
+      );
       await peerManager.connectToHost(targetCode);
       setConnectionStatus('CONNECTED');
       setRoomCode(targetCode);
-    } catch (err: any) {
+    } catch {
       setErrorMessage('Could not connect to room code. Ensure host is waiting!');
       setConnectionStatus('IDLE');
     }
@@ -111,9 +132,8 @@ export const Lobby: React.FC<LobbyProps> = ({
       if (peerManager.isHost) {
         peerManager.sendMessage('GAME_START', { format });
         onStartGame(true, roomCode);
-      } else {
-        onStartGame(false, roomCode);
       }
+      // Note: non-hosts cannot launch; they await GAME_START from host
     } else {
       onStartGame(true, 'LOCAL_SOLO');
     }
@@ -230,21 +250,44 @@ export const Lobby: React.FC<LobbyProps> = ({
 
           {connectionStatus === 'IDLE' && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="glass-panel" style={{ padding: '1.5rem' }}>
-                <h4 style={{ fontWeight: 700, marginBottom: '0.5rem' }}>Host Match</h4>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Generate a room code.</p>
+              <div className="glass-panel" style={{ padding: '1.5rem', textAlign: 'left' }}>
+                <h4 style={{ fontWeight: 700, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Crown size={18} color="var(--primary)" /> Host Match
+                </h4>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                  Custom code or auto-generate:
+                </p>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                  <input
+                    type="text"
+                    placeholder="CHAMP-XXXX or Custom"
+                    value={customHostCode}
+                    onChange={(e) => setCustomHostCode(e.target.value.toUpperCase())}
+                    className="input-base"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    title="Generate Random Code"
+                    onClick={handleRandomizeHostCode}
+                    style={{ padding: '0.4rem 0.6rem' }}
+                  >
+                    <Dices size={18} />
+                  </button>
+                </div>
                 <button className="btn-primary" style={{ width: '100%' }} onClick={handleCreateRoom}>
                   Create Room
                 </button>
               </div>
 
-              <div className="glass-panel" style={{ padding: '1.5rem' }}>
+              <div className="glass-panel" style={{ padding: '1.5rem', textAlign: 'left' }}>
                 <h4 style={{ fontWeight: 700, marginBottom: '0.5rem' }}>Join Match</h4>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>Enter friend's code.</p>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>Enter friend's code.</p>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <input
                     type="text"
-                    placeholder="CHAMP-XXXX"
+                    placeholder="CHAMP-XXXX or Custom"
                     value={joinCodeInput}
                     onChange={(e) => setJoinCodeInput(e.target.value)}
                     className="input-base"
@@ -258,13 +301,16 @@ export const Lobby: React.FC<LobbyProps> = ({
 
           {connectionStatus === 'HOSTING' && (
             <div className="glass-panel" style={{ padding: '2rem', border: '1px solid var(--primary)' }}>
-              <p style={{ fontWeight: 600, color: 'var(--primary)', marginBottom: '1rem' }}>Waiting for opponent...</p>
+              <p style={{ fontWeight: 600, color: 'var(--primary)', marginBottom: '1rem' }}>Waiting for opponent to connect...</p>
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem' }}>
                 <span style={{ fontSize: '2rem', fontFamily: 'var(--font-mono)', fontWeight: 800, letterSpacing: '2px' }}>{roomCode}</span>
-                <button className="btn-secondary" onClick={handleCopyCode}>
+                <button className="btn-secondary" onClick={handleCopyCode} title="Copy Code">
                   {isCopied ? <Check size={20} color="var(--accent-emerald)" /> : <Copy size={20} />}
                 </button>
               </div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
+                Share this room code with your friend.
+              </p>
             </div>
           )}
 
@@ -276,10 +322,32 @@ export const Lobby: React.FC<LobbyProps> = ({
 
           {connectionStatus === 'CONNECTED' && (
             <div className="glass-panel" style={{ padding: '2rem', border: '1px solid var(--accent-emerald)' }}>
-              <p style={{ fontWeight: 700, color: 'var(--accent-emerald)', fontSize: '1.2rem', marginBottom: '1.5rem' }}>Peer Connected!</p>
-              <button className="btn-primary" style={{ width: '100%', padding: '1rem' }} onClick={handleLaunchBattle}>
-                Start Pokémon Battle ({format})
-              </button>
+              <p style={{ fontWeight: 700, color: 'var(--accent-emerald)', fontSize: '1.2rem', marginBottom: '1rem' }}>
+                🎉 Opponent Connected to Room <span style={{ fontFamily: 'var(--font-mono)' }}>{roomCode}</span>!
+              </p>
+
+              {peerManager.isHost ? (
+                <div>
+                  <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                    You are the room creator. When both players are ready, launch the battle!
+                  </p>
+                  <button className="btn-primary" style={{ width: '100%', padding: '1rem', fontSize: '1rem' }} onClick={handleLaunchBattle}>
+                    Start Pokémon Battle ({format})
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
+                  <div className="hero-badge" style={{ backgroundColor: 'rgba(56, 189, 248, 0.15)', borderColor: 'rgba(56, 189, 248, 0.4)', color: '#38bdf8' }}>
+                    <Sparkles size={16} /> Guest Connected
+                  </div>
+                  <p style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text)' }}>
+                    Waiting for room creator to start the battle...
+                  </p>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Format set by host: <strong style={{ color: 'var(--primary)' }}>{format}</strong>
+                  </span>
+                </div>
+              )}
             </div>
           )}
 

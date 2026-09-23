@@ -12,6 +12,7 @@ import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
 import { calculateDamage, isGrounded } from '../engine/damageCalc';
 import { peerManager } from '../network/peerManager';
+import type { NetworkMessage } from '../network/peerManager';
 import { generateRandomCpuTeam } from '../utils/showdownParser';
 import { HELD_ITEMS } from '../data/items';
 import { Award, ArrowLeft, Shield, Sparkles, Calculator, X } from 'lucide-react';
@@ -80,84 +81,49 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
   const checkEntranceAbilities = (
     enteringMon: ActivePokemonState,
-    currentFields: BattleFieldConditions
+    currentFields: BattleFieldConditions,
+    logger?: (msg: string) => void
   ): BattleFieldConditions => {
     const updated = { ...currentFields };
+    const logFn = logger || addLog;
     const ab = enteringMon.ability;
     if (ab === 'Grassy Surge') {
       updated.terrain = 'Grassy';
       updated.terrainTurns = 5;
-      addLog(`🌿 ${enteringMon.nickname}'s Grassy Surge turned the ground green!`);
+      logFn(`🌿 ${enteringMon.nickname}'s Grassy Surge turned the ground green!`);
     } else if (ab === 'Psychic Surge') {
       updated.terrain = 'Psychic';
       updated.terrainTurns = 5;
-      addLog(`🔮 ${enteringMon.nickname}'s Psychic Surge made the ground weird!`);
+      logFn(`🔮 ${enteringMon.nickname}'s Psychic Surge made the ground weird!`);
     } else if (ab === 'Electric Surge' || ab === 'Hadron Engine') {
       updated.terrain = 'Electric';
       updated.terrainTurns = 5;
-      addLog(`⚡ ${enteringMon.nickname}'s ${ab} electrified the battlefield!`);
+      logFn(`⚡ ${enteringMon.nickname}'s ${ab} electrified the battlefield!`);
     } else if (ab === 'Misty Surge') {
       updated.terrain = 'Misty';
       updated.terrainTurns = 5;
-      addLog(`🌫️ ${enteringMon.nickname}'s Misty Surge enveloped the field in mist!`);
+      logFn(`🌫️ ${enteringMon.nickname}'s Misty Surge enveloped the field in mist!`);
     } else if (ab === 'Drought') {
       updated.weather = 'Sun';
       updated.weatherTurns = 5;
-      addLog(`☀️ ${enteringMon.nickname}'s Drought made the sunlight turn harsh!`);
+      logFn(`☀️ ${enteringMon.nickname}'s Drought made the sunlight turn harsh!`);
     } else if (ab === 'Drizzle') {
       updated.weather = 'Rain';
       updated.weatherTurns = 5;
-      addLog(`🌧️ ${enteringMon.nickname}'s Drizzle made it start to rain!`);
+      logFn(`🌧️ ${enteringMon.nickname}'s Drizzle made it start to rain!`);
     } else if (ab === 'Sand Stream') {
       updated.weather = 'Sandstorm';
       updated.weatherTurns = 5;
-      addLog(`🏜️ ${enteringMon.nickname}'s Sand Stream whipped up a sandstorm!`);
+      logFn(`🏜️ ${enteringMon.nickname}'s Sand Stream whipped up a sandstorm!`);
     } else if (ab === 'Snow Warning') {
       updated.weather = 'Snow';
       updated.weatherTurns = 5;
-      addLog(`❄️ ${enteringMon.nickname}'s Snow Warning made snow fall!`);
+      logFn(`❄️ ${enteringMon.nickname}'s Snow Warning made snow fall!`);
     } else if (ab === 'Intimidate') {
-      addLog(`🦁 ${enteringMon.nickname}'s Intimidate cut opposing Pokémon's Attack!`);
+      logFn(`🦁 ${enteringMon.nickname}'s Intimidate cut opposing Pokémon's Attack!`);
     }
     return updated;
   };
-
-  const handleConfirmTeamSelection = () => {
-    if (selectedPickIds.length < requiredPicks) return;
-
-    const fullPlayerTeam = playerTeam.length > 0 ? playerTeam : generateRandomCpuTeam();
-    const chosenPlayerMons = selectedPickIds
-      .map((id) => fullPlayerTeam.find((p) => p.id === id))
-      .filter(Boolean) as CustomPokemon[];
-
-    const fullCpuTeam = generateRandomCpuTeam();
-    const chosenCpuMons = fullCpuTeam.slice(0, requiredPicks);
-
-    const initMyTeam = initializeTeamState(chosenPlayerMons);
-    const initOppTeam = initializeTeamState(chosenCpuMons);
-    const myActive = format === 'Singles' ? [0] : [0, 1];
-    const oppActive = format === 'Singles' ? [0] : [0, 1];
-
-    setMyTeamState(initMyTeam);
-    setOpponentTeamState(initOppTeam);
-    setMyActiveIndices(myActive);
-    setOppActiveIndices(oppActive);
-    setIsSelectingTeam(false);
-
-    let initField: BattleFieldConditions = {};
-    myActive.forEach((idx) => {
-      if (initMyTeam[idx]) initField = checkEntranceAbilities(initMyTeam[idx], initField);
-    });
-    oppActive.forEach((idx) => {
-      if (initOppTeam[idx]) initField = checkEntranceAbilities(initOppTeam[idx], initField);
-    });
-    setFieldConditions(initField);
-
-    setBattleLog([
-      `Battle started in ${format} format! Bring ${requiredPicks} of 6 VGC rules applied.`
-    ]);
-  };
-
 
   const [myTeamState, setMyTeamState] = useState<ActivePokemonState[]>(() =>
     initializeTeamState(playerTeam.length > 0 ? playerTeam.slice(0, requiredPicks) : generateRandomCpuTeam().slice(0, requiredPicks))
@@ -174,7 +140,83 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const [oppActiveIndices, setOppActiveIndices] = useState<number[]>(
     format === 'Singles' ? [0] : [0, 1]
   );
+  const [fieldConditions, setFieldConditions] = useState<BattleFieldConditions>({});
 
+  // Synchronization refs for multiplayer
+  const mySubmittedMonsRef = useRef<CustomPokemon[] | null>(null);
+  const oppSubmittedMonsRef = useRef<CustomPokemon[] | null>(null);
+  const hostPendingActionsRef = useRef<BattleAction[] | null>(null);
+  const guestPendingActionsRef = useRef<BattleAction[] | null>(null);
+
+  const myTeamStateRef = useRef(myTeamState);
+  const opponentTeamStateRef = useRef(opponentTeamState);
+  const fieldConditionsRef = useRef<BattleFieldConditions>({});
+  const myActiveIndicesRef = useRef(myActiveIndices);
+  const oppActiveIndicesRef = useRef(oppActiveIndices);
+
+
+  useEffect(() => {
+    myTeamStateRef.current = myTeamState;
+    opponentTeamStateRef.current = opponentTeamState;
+    fieldConditionsRef.current = fieldConditions;
+    myActiveIndicesRef.current = myActiveIndices;
+    oppActiveIndicesRef.current = oppActiveIndices;
+  }, [myTeamState, opponentTeamState, fieldConditions, myActiveIndices, oppActiveIndices]);
+
+  const [isWaitingForOpponentTeam, setIsWaitingForOpponentTeam] = useState<boolean>(false);
+  const [isWaitingForOpponentTurn, setIsWaitingForOpponentTurn] = useState<boolean>(false);
+
+  const startBattleWithTeams = (myMons: CustomPokemon[], oppMons: CustomPokemon[]) => {
+    const initMyTeam = initializeTeamState(myMons);
+    const initOppTeam = initializeTeamState(oppMons);
+    const myActive = format === 'Singles' ? [0] : [0, 1];
+    const oppActive = format === 'Singles' ? [0] : [0, 1];
+
+    setMyTeamState(initMyTeam);
+    setOpponentTeamState(initOppTeam);
+    setMyActiveIndices(myActive);
+    setOppActiveIndices(oppActive);
+    setIsSelectingTeam(false);
+    setIsWaitingForOpponentTeam(false);
+
+    let initField: BattleFieldConditions = {};
+    myActive.forEach((idx) => {
+      if (initMyTeam[idx]) initField = checkEntranceAbilities(initMyTeam[idx], initField);
+    });
+    oppActive.forEach((idx) => {
+      if (initOppTeam[idx]) initField = checkEntranceAbilities(initOppTeam[idx], initField);
+    });
+    setFieldConditions(initField);
+    fieldConditionsRef.current = initField;
+
+    setBattleLog([
+      `Battle started in ${format} format! Bring ${requiredPicks} of 6 VGC rules applied.`
+    ]);
+  };
+
+  const handleConfirmTeamSelection = () => {
+    if (selectedPickIds.length < requiredPicks) return;
+
+    const fullPlayerTeam = playerTeam.length > 0 ? playerTeam : generateRandomCpuTeam();
+    const chosenPlayerMons = selectedPickIds
+      .map((id) => fullPlayerTeam.find((p) => p.id === id))
+      .filter(Boolean) as CustomPokemon[];
+
+    mySubmittedMonsRef.current = chosenPlayerMons;
+
+    if (roomId === 'LOCAL_SOLO') {
+      const fullCpuTeam = generateRandomCpuTeam();
+      const chosenCpuMons = fullCpuTeam.slice(0, requiredPicks);
+      startBattleWithTeams(chosenPlayerMons, chosenCpuMons);
+    } else {
+      peerManager.sendMessage('TEAM_SUBMIT', { team: chosenPlayerMons });
+      if (oppSubmittedMonsRef.current) {
+        startBattleWithTeams(chosenPlayerMons, oppSubmittedMonsRef.current);
+      } else {
+        setIsWaitingForOpponentTeam(true);
+      }
+    }
+  };
 
   interface FaintedSlotReplacement {
     activeSlotIndex: number;
@@ -182,7 +224,6 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   }
   const [pendingReplacements, setPendingReplacements] = useState<FaintedSlotReplacement[]>([]);
   const [showBattleCalc, setShowBattleCalc] = useState<boolean>(false);
-
 
   // Selection state for current turn
   const [selectedActorIndex, setSelectedActorIndex] = useState<number>(0);
@@ -215,27 +256,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     processLogQueue();
   };
 
-  const [fieldConditions, setFieldConditions] = useState<BattleFieldConditions>({});
   const [isTurnProcessing, setIsTurnProcessing] = useState<boolean>(false);
   const [winner, setWinner] = useState<string | null>(null);
 
-  // Listen for PeerJS network messages
-  useEffect(() => {
-    if (roomId === 'LOCAL_SOLO') return;
 
-    const handleMsg = (msg: any) => {
-      if (msg.type === 'TURN_ACTION') {
-        const oppActions: BattleAction[] = msg.payload.actions;
-        resolveTurn(oppActions);
-      }
-    };
-
-    // Attach peer listener
-    const peer = (peerManager as any).peer;
-    if (peer) {
-      peerManager['onMessageCallback'] = handleMsg;
-    }
-  }, [roomId, pendingActions, myTeamState, opponentTeamState]);
 
 
   const [isMegaChecked, setIsMegaChecked] = useState<boolean>(false);
@@ -297,11 +321,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
     // Check if all active living slots have actions selected
     if (updated.length >= alivePlayerActiveIndices.length) {
-      if (roomId !== 'LOCAL_SOLO') {
-        // Send to remote friend
-        peerManager.sendMessage('TURN_ACTION', { actions: updated });
-        addLog('Submitted turn choices! Waiting for opponent...');
-      } else {
+      if (roomId === 'LOCAL_SOLO') {
         // AI Solo turn generation for living active Pokemon
         const aiActions: BattleAction[] = aliveOppActiveIndices.map((oppIdx, slot) => {
           const oppPkmn = opponentTeamState[oppIdx];
@@ -318,7 +338,23 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           };
         });
 
-        resolveTurnWithActions(updated, aiActions);
+        resolveSoloTurn(updated, aiActions);
+      } else {
+        // Multiplayer turn submission
+        setIsWaitingForOpponentTurn(true);
+        if (!isHost) {
+          // Guest: send to Host
+          peerManager.sendMessage('TURN_ACTION', { actions: updated });
+          addLog('Submitted turn choices! Waiting for host to resolve...');
+        } else {
+          // Host: store Host actions
+          hostPendingActionsRef.current = updated;
+          if (guestPendingActionsRef.current) {
+            executeAuthoritativeTurn(updated, guestPendingActionsRef.current);
+          } else {
+            addLog('Submitted turn choices! Waiting for opponent...');
+          }
+        }
       }
     } else {
       setSelectedActorIndex((prev) => prev + 1);
@@ -334,17 +370,43 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     }
   };
 
-  const resolveTurn = (oppActions: BattleAction[]) => {
-    resolveTurnWithActions(pendingActions, oppActions);
-  };
+  const resolveTurnCore = (
+    myActs: BattleAction[],
+    oppActs: BattleAction[],
+    currentHostTeam: ActivePokemonState[],
+    currentGuestTeam: ActivePokemonState[],
+    currentField: BattleFieldConditions,
+    hostActiveSlots: number[],
+    guestActiveSlots: number[]
+  ) => {
+    const turnLogs: string[] = [];
+    const pushLog = (txt: string) => {
+      turnLogs.push(txt);
+    };
 
-  const resolveTurnWithActions = (myActs: BattleAction[], oppActs: BattleAction[]) => {
-    setIsTurnProcessing(true);
+    // Deep clone team states and field
+    let nextMyTeam = currentHostTeam.map((p) => ({
+      ...p,
+      activeTypes: p.activeTypes ? [...p.activeTypes] : undefined,
+      statStages: { ...p.statStages },
+      moves: p.moves.map((m) => ({ ...m }))
+    }));
+    let nextOppTeam = currentGuestTeam.map((p) => ({
+      ...p,
+      activeTypes: p.activeTypes ? [...p.activeTypes] : undefined,
+      statStages: { ...p.statStages },
+      moves: p.moves.map((m) => ({ ...m }))
+    }));
+    let activeField: BattleFieldConditions = { ...currentField };
 
-    // Clone team states
-    let nextMyTeam = [...myTeamState];
-    let nextOppTeam = [...opponentTeamState];
-    let activeField: BattleFieldConditions = { ...fieldConditions };
+    const alivePlayerActiveIndices = hostActiveSlots.filter((idx) => {
+      const p = nextMyTeam[idx];
+      return p && !p.isFainted && p.currentHp > 0;
+    });
+    const aliveOppActiveIndices = guestActiveSlots.filter((idx) => {
+      const p = nextOppTeam[idx];
+      return p && !p.isFainted && p.currentHp > 0;
+    });
 
     const getEffectiveSpeed = (pkmn: ActivePokemonState | undefined, isPlayer: boolean, action?: BattleAction): number => {
       if (!pkmn) return 0;
@@ -402,7 +464,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     const allActions: { action: BattleAction; isMyAction: boolean; speed: number; priority: number }[] = [];
 
     myActs.forEach((act) => {
-      const actualSlotIdx = alivePlayerActiveIndices[act.actorIndex] ?? myActiveIndices[act.actorIndex];
+      const actualSlotIdx = alivePlayerActiveIndices[act.actorIndex] ?? hostActiveSlots[act.actorIndex];
       const actorPkmn = nextMyTeam[actualSlotIdx];
       const move = act.moveId ? MOVES_DATABASE[act.moveId] : null;
       let priority = move ? move.priority || 0 : 0;
@@ -418,7 +480,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     });
 
     oppActs.forEach((act) => {
-      const actualSlotIdx = aliveOppActiveIndices[act.actorIndex] ?? oppActiveIndices[act.actorIndex];
+      const actualSlotIdx = aliveOppActiveIndices[act.actorIndex] ?? guestActiveSlots[act.actorIndex];
       const actorPkmn = nextOppTeam[actualSlotIdx];
       const move = act.moveId ? MOVES_DATABASE[act.moveId] : null;
       let priority = move ? move.priority || 0 : 0;
@@ -446,8 +508,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     allActions.forEach(({ action, isMyAction }) => {
       const attackerTeam = isMyAction ? nextMyTeam : nextOppTeam;
       const defenderTeam = isMyAction ? nextOppTeam : nextMyTeam;
-      const attackerActiveIndices = isMyAction ? myActiveIndices : oppActiveIndices;
-      const defenderActiveIndices = isMyAction ? oppActiveIndices : myActiveIndices;
+      const attackerActiveIndices = isMyAction ? hostActiveSlots : guestActiveSlots;
+      const defenderActiveIndices = isMyAction ? guestActiveSlots : hostActiveSlots;
 
       const attackerSlotIndex = attackerActiveIndices[action.actorIndex];
       const attacker = attackerTeam[attackerSlotIndex];
@@ -483,21 +545,21 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
             moves: []
           };
           attacker.maxStats = calculateAllStats(dummyCustom, megaSpecies);
-          addLog(`✨ ${attacker.nickname} Mega Evolved! Ability became ${matchingMega.megaAbility}!`);
+          pushLog(`✨ ${attacker.nickname} Mega Evolved! Ability became ${matchingMega.megaAbility}!`);
         }
       }
 
       // Handle Flinching
       if (attacker.isFlinched) {
         attacker.isFlinched = false;
-        addLog(`😵 ${attacker.nickname} flinched and couldn't move!`);
+        pushLog(`😵 ${attacker.nickname} flinched and couldn't move!`);
         return;
       }
 
       // Handle Recharge turn requirement
       if (attacker.mustRecharge) {
         attacker.mustRecharge = false;
-        addLog(`${attacker.nickname} must recharge and cannot move!`);
+        pushLog(`${attacker.nickname} must recharge and cannot move!`);
         return;
       }
 
@@ -505,12 +567,18 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         const move = MOVES_DATABASE[action.moveId];
         if (!move) return;
 
+        // Decrement move PP properly!
+        const moveEntry = attacker.moves.find((m) => m.move.id === move.id);
+        if (moveEntry && moveEntry.currentPp > 0) {
+          moveEntry.currentPp -= 1;
+        }
+
         // Reset Glaive Rush vulnerability on attacker's turn
         attacker.isGlaiveRushVulnerable = false;
 
         // First Impression & Fake Out: Fail if not used on the first turn out on the field
         if ((move.id === 'first_impression' || move.id === 'fake_out') && (attacker.turnsOnField || 1) > 1) {
-          addLog(`${attacker.nickname} used ${move.name}... but it failed!`);
+          pushLog(`${attacker.nickname} used ${move.name}... but it failed!`);
           return;
         }
 
@@ -523,7 +591,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
             Sandstorm: '⏳ A sandstorm kicked up!',
             Snow: '🌨️ It began to snow!'
           };
-          addLog(weatherText[move.weatherEffect] || `The weather changed to ${move.weatherEffect}!`);
+          pushLog(weatherText[move.weatherEffect] || `The weather changed to ${move.weatherEffect}!`);
         }
 
         // Handle Terrain-setting moves (Grassy Terrain, Psychic Terrain, Electric Terrain, Misty Terrain)
@@ -535,7 +603,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
             Electric: '⚡ An electric current ran across the battlefield!',
             Misty: '🌫️ Mist swirled around the battlefield!'
           };
-          addLog(terrainText[move.terrainEffect] || `The terrain became ${move.terrainEffect}!`);
+          pushLog(terrainText[move.terrainEffect] || `The terrain became ${move.terrainEffect}!`);
         }
 
         // Handle Charging turn requirement (1-turn instant in matching weather: Solar Beam in Sun, Electro Shot in Rain)
@@ -546,11 +614,11 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
           if (!isInstantWeather) {
             attacker.isChargingMove = true;
-            addLog(`⚡ ${attacker.nickname} is absorbing energy for ${move.name}!`);
+            pushLog(`⚡ ${attacker.nickname} is absorbing energy for ${move.name}!`);
             return;
           } else {
             const weatherName = move.id === 'solar_beam' ? 'harsh sunlight' : 'heavy rain';
-            addLog(`✨ ${attacker.nickname} absorbed energy for ${move.name} instantly in the ${weatherName}!`);
+            pushLog(`✨ ${attacker.nickname} absorbed energy for ${move.name} instantly in the ${weatherName}!`);
           }
         }
         if (attacker.isChargingMove) {
@@ -565,9 +633,9 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         // Glaive Rush: User takes 2x double damage until its next move
         if (move.id === 'glaive_rush') {
           attacker.isGlaiveRushVulnerable = true;
-          addLog(`⚠️ ${attacker.nickname} used Glaive Rush and is vulnerable to double damage!`);
+          pushLog(`⚠️ ${attacker.nickname} used Glaive Rush and is vulnerable to double damage!`);
         } else {
-          addLog(`${attacker.nickname} used ${move.name}!`);
+          pushLog(`${attacker.nickname} used ${move.name}!`);
         }
 
         // Double Shock: User loses Electric typing until switched out
@@ -575,14 +643,14 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           const currentTypes = attacker.activeTypes || attacker.species.types;
           if (currentTypes.includes('Electric')) {
             attacker.activeTypes = currentTypes.filter((t) => t !== 'Electric');
-            addLog(`⚡ ${attacker.nickname} used up all its electricity and lost its Electric typing!`);
+            pushLog(`⚡ ${attacker.nickname} used up all its electricity and lost its Electric typing!`);
           }
         }
 
         // Aurora Veil: Usable only in Snow, blocks 1/3 physical and special damage taken
         if (move.id === 'aurora_veil') {
           if (activeField.weather !== 'Snow') {
-            addLog(`${attacker.nickname} used Aurora Veil... but it failed! (Aurora Veil can only be used during Snow)`);
+            pushLog(`${attacker.nickname} used Aurora Veil... but it failed! (Aurora Veil can only be used during Snow)`);
             return;
           }
           const veilTurns = attacker.item === 'light_clay' ? 8 : 5;
@@ -591,63 +659,46 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           } else {
             activeField = { ...activeField, auroraVeilTeam2: veilTurns };
           }
-          addLog(`❄️ ${attacker.nickname} set up an Aurora Veil! (Blocks 1/3 of physical & special damage for ${veilTurns} turns)`);
+          pushLog(`❄️ ${attacker.nickname} set up an Aurora Veil! (Blocks 1/3 of physical & special damage for ${veilTurns} turns)`);
           return;
         }
 
-        const checkMoveHit = (m: typeof move, atk: typeof attacker, def: typeof attacker): boolean => {
+        const checkMoveHit = (m: typeof move, _atk: typeof attacker, def: typeof attacker): boolean => {
           if (def.isGlaiveRushVulnerable) return true; // All moves hit during Glaive Rush vulnerability
           if (activeField.weather === 'Rain' && (m.id === 'thunder' || m.id === 'hurricane')) return true;
-          if (activeField.weather === 'Snow' && m.id === 'blizzard') return true;
-          if (m.accuracy >= 101 || m.accuracy === 0) return true;
-          let baseAcc = m.accuracy;
           if (activeField.weather === 'Sun' && (m.id === 'thunder' || m.id === 'hurricane')) {
-            baseAcc = 50;
+            return Math.random() * 100 <= 50; // Accuracy drops to 50% in Sun
           }
-          const accStage = (atk.statStages?.accuracy || 0) - (def.statStages?.evasion || 0);
-          const clampedStage = Math.max(-6, Math.min(6, accStage));
-          const stageMultipliers: Record<number, number> = {
-            '-6': 3 / 9, '-5': 3 / 8, '-4': 3 / 7, '-3': 3 / 6, '-2': 3 / 5, '-1': 3 / 4,
-            '0': 1.0, '1': 4 / 3, '2': 5 / 3, '3': 6 / 3, '4': 7 / 3, '5': 8 / 3, '6': 9 / 3
-          };
-          let multiplier = stageMultipliers[clampedStage] || 1.0;
-          
-          if (activeField.weather === 'Sandstorm' && def.ability === 'Sand Veil') multiplier *= 0.8;
-          if (activeField.weather === 'Snow' && def.ability === 'Snow Cloak') multiplier *= 0.8;
-          
-          const itemAccMod = atk.item === 'wide_lens' ? 1.1 : 1.0;
-          return Math.random() * 100 < baseAcc * multiplier * itemAccMod;
+          if (m.accuracy === null || m.accuracy === undefined || m.accuracy === 0) return true;
+          return Math.random() * 100 <= m.accuracy;
         };
 
         const isDefAuroraActive = isMyAction
           ? Boolean(activeField.auroraVeilTeam2 && activeField.auroraVeilTeam2 > 0)
           : Boolean(activeField.auroraVeilTeam1 && activeField.auroraVeilTeam1 > 0);
 
-        const moveEffectivePriority = (move.id === 'grassy_glide' && activeField.terrain === 'Grassy' && isGrounded(attacker))
-          ? 1
-          : (move.priority || 0);
+        let moveEffectivePriority = move.priority || 0;
+        if (move.id === 'grassy_glide' && activeField.terrain === 'Grassy' && isGrounded(attacker)) {
+          moveEffectivePriority = 1;
+        }
 
         const applyMoveSecondaryEffects = (m: typeof move, atk: typeof attacker, def: typeof attacker, damageDealt: number) => {
-          if (def.isFainted) return;
-
-          // 1. Flinch (e.g. Rock Slide 30%, Iron Head 30%, Fake Out 100%)
-          if (m.flinchChance && !def.isFainted) {
-            if (Math.random() * 100 < m.flinchChance) {
+          // 1. Flinch (e.g. Fake Out, Icicle Crash, Rock Slide, Iron Head, Headbutt)
+          if (m.flinchChance && Math.random() * 100 < m.flinchChance) {
+            if (def.ability !== 'Inner Focus') {
               def.isFlinched = true;
-              addLog(`💥 ${def.nickname} flinched!`);
+              pushLog(`💫 ${def.nickname} flinched!`);
             }
           }
 
-          // 2. Status Effects (e.g. Scald 30% Burn, Sludge Bomb 30% Poison, Thunderbolt 10% Paralysis, Ice Beam 10% Freeze)
+          // 2. Status Effects (Burn, Paralysis, Sleep, Poison, Freeze)
           if (m.statusEffect && !def.status && !def.isFainted) {
-            // Electric Terrain prevents Sleep on grounded Pokemon
             if (activeField.terrain === 'Electric' && m.statusEffect === 'Sleep' && isGrounded(def)) {
-              addLog(`⚡ Electric Terrain prevented ${def.nickname} from falling asleep!`);
+              pushLog(`⚡ Electric Terrain prevented ${def.nickname} from falling asleep!`);
               return;
             }
-            // Misty Terrain prevents all status conditions on grounded Pokemon
             if (activeField.terrain === 'Misty' && isGrounded(def)) {
-              addLog(`🌫️ Misty Terrain protected ${def.nickname} from status conditions!`);
+              pushLog(`🌫️ Misty Terrain protected ${def.nickname} from status conditions!`);
               return;
             }
 
@@ -661,7 +712,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
                 Poison: '☠️',
                 Freeze: '❄️'
               };
-              addLog(`${statusEmoji[m.statusEffect] || '✨'} ${def.nickname} was afflicted with ${m.statusEffect}!`);
+              pushLog(`${statusEmoji[m.statusEffect] || '✨'} ${def.nickname} was afflicted with ${m.statusEffect}!`);
             }
           }
 
@@ -669,7 +720,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           if (m.drainPercent && damageDealt > 0 && !atk.isFainted && atk.currentHp < atk.maxStats.hp) {
             const drained = Math.max(1, Math.floor((damageDealt * m.drainPercent) / 100));
             atk.currentHp = Math.min(atk.maxStats.hp, atk.currentHp + drained);
-            addLog(`💚 ${atk.nickname} drained ${drained} HP!`);
+            pushLog(`💚 ${atk.nickname} drained ${drained} HP!`);
           }
 
           // 4. Stat Changes (e.g. Trop Kick, Snarl, Icy Wind, Moonblast, Shadow Ball, Close Combat, Make It Rain, Armor Cannon)
@@ -687,7 +738,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
                     const direction = sc.stages > 0 ? 'rose' : 'fell';
                     const amountText = Math.abs(sc.stages) > 1 ? ` sharply!` : '!';
                     const statNameFormatted = statKey === 'spAtk' ? 'Sp. Atk' : statKey === 'spDef' ? 'Sp. Def' : statKey.charAt(0).toUpperCase() + statKey.slice(1);
-                    addLog(`${targetPkmn.nickname}'s ${statNameFormatted} ${direction}${amountText}`);
+                    pushLog(`${targetPkmn.nickname}'s ${statNameFormatted} ${direction}${amountText}`);
                   }
                 }
               }
@@ -702,41 +753,41 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
             if (defender && !defender.isFainted) {
               // Psychic Terrain blocks priority attacks against grounded targets
               if (activeField.terrain === 'Psychic' && moveEffectivePriority > 0 && isGrounded(defender)) {
-                addLog(`🔮 Psychic Terrain protected ${defender.nickname} from ${attacker.nickname}'s ${move.name}!`);
+                pushLog(`🔮 Psychic Terrain protected ${defender.nickname} from ${attacker.nickname}'s ${move.name}!`);
                 return;
               }
               if (!checkMoveHit(move, attacker, defender)) {
-                addLog(`${attacker.nickname}'s attack missed ${defender.nickname}!`);
+                pushLog(`${attacker.nickname}'s attack missed ${defender.nickname}!`);
                 return;
               }
               defender.timesHit = (defender.timesHit || 0) + 1;
               const res = calculateDamage(attacker, defender, move, format, false, attackerTeam, isDefAuroraActive, activeField);
               defender.currentHp = Math.max(0, defender.currentHp - res.damage);
-              if (res.description) addLog(res.description);
-              addLog(`${defender.nickname} took ${res.damage} damage!`);
+              if (res.description) pushLog(res.description);
+              pushLog(`${defender.nickname} took ${res.damage} damage!`);
 
               applyMoveSecondaryEffects(move, attacker, defender, res.damage);
 
               if (defender.currentHp <= 0) {
                 defender.isFainted = true;
-                addLog(`${defender.nickname} fainted!`);
+                pushLog(`${defender.nickname} fainted!`);
               }
 
               // Recoil damage calculation
               if (move.recoilPercent && res.damage > 0 && !attacker.isFainted) {
                 const recoilDamage = Math.max(1, Math.floor((res.damage * move.recoilPercent) / 100));
                 attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage);
-                addLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
+                pushLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
                 if (attacker.currentHp <= 0) {
                   attacker.isFainted = true;
-                  addLog(`${attacker.nickname} fainted from recoil!`);
+                  pushLog(`${attacker.nickname} fainted from recoil!`);
                 }
               }
 
               // Spicy Spray ability (burns attacker when hit)
               if (defender.ability === 'Spicy Spray' && res.damage > 0 && !attacker.isFainted && !attacker.status) {
                 attacker.status = 'Burn';
-                addLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
+                pushLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
               }
             }
           });
@@ -748,55 +799,56 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
           // Mid-turn retargeting: if targeted enemy fainted mid-turn, redirect to remaining alive defender
           if ((!defender || defender.isFainted || defender.currentHp <= 0) && format === 'Doubles') {
-            const altSlot = defenderActiveIndices.find((idx) => {
-              const d = defenderTeam[idx];
-              return d && !d.isFainted && d.currentHp > 0;
-            });
-            if (altSlot !== undefined) {
-              targetSlotIdx = altSlot;
+            const alternateSlotIdx = defenderActiveIndices.find(
+              (idx) => idx !== targetSlotIdx && defenderTeam[idx] && !defenderTeam[idx].isFainted && defenderTeam[idx].currentHp > 0
+            );
+            if (alternateSlotIdx !== undefined) {
+              targetSlotIdx = alternateSlotIdx;
               defender = defenderTeam[targetSlotIdx];
-              addLog(`${attacker.nickname}'s attack redirected to ${defender.nickname}!`);
+              pushLog(`${attacker.nickname}'s attack redirected to ${defender.nickname}!`);
             }
           }
 
-          if (defender && !defender.isFainted) {
+          if (defender && !defender.isFainted && defender.currentHp > 0) {
             // Psychic Terrain blocks priority attacks against grounded targets
             if (activeField.terrain === 'Psychic' && moveEffectivePriority > 0 && isGrounded(defender)) {
-              addLog(`🔮 Psychic Terrain protected ${defender.nickname} from ${attacker.nickname}'s ${move.name}!`);
+              pushLog(`🔮 Psychic Terrain protected ${defender.nickname} from ${attacker.nickname}'s ${move.name}!`);
               return;
             }
+
             if (!checkMoveHit(move, attacker, defender)) {
-              addLog(`${attacker.nickname}'s attack missed!`);
+              pushLog(`${attacker.nickname}'s attack missed ${defender.nickname}!`);
               return;
             }
+
             defender.timesHit = (defender.timesHit || 0) + 1;
             const res = calculateDamage(attacker, defender, move, format, false, attackerTeam, isDefAuroraActive, activeField);
             defender.currentHp = Math.max(0, defender.currentHp - res.damage);
-            if (res.description) addLog(res.description);
-            addLog(`${defender.nickname} took ${res.damage} damage!`);
+            if (res.description) pushLog(res.description);
+            pushLog(`${defender.nickname} took ${res.damage} damage!`);
 
             applyMoveSecondaryEffects(move, attacker, defender, res.damage);
 
             if (defender.currentHp <= 0) {
               defender.isFainted = true;
-              addLog(`${defender.nickname} fainted!`);
+              pushLog(`${defender.nickname} fainted!`);
             }
 
             // Recoil damage calculation
             if (move.recoilPercent && res.damage > 0 && !attacker.isFainted) {
               const recoilDamage = Math.max(1, Math.floor((res.damage * move.recoilPercent) / 100));
               attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage);
-              addLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
+              pushLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
               if (attacker.currentHp <= 0) {
                 attacker.isFainted = true;
-                addLog(`${attacker.nickname} fainted from recoil!`);
+                pushLog(`${attacker.nickname} fainted from recoil!`);
               }
             }
 
             // Spicy Spray ability (burns attacker when hit)
             if (defender.ability === 'Spicy Spray' && res.damage > 0 && !attacker.isFainted && !attacker.status) {
               attacker.status = 'Burn';
-              addLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
+              pushLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
             }
           }
         }
@@ -804,12 +856,12 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     });
 
     // Increment turns on field for active Pokemon
-    myActiveIndices.forEach((idx) => {
+    hostActiveSlots.forEach((idx) => {
       if (nextMyTeam[idx] && !nextMyTeam[idx].isFainted) {
         nextMyTeam[idx].turnsOnField = (nextMyTeam[idx].turnsOnField || 1) + 1;
       }
     });
-    oppActiveIndices.forEach((idx) => {
+    guestActiveSlots.forEach((idx) => {
       if (nextOppTeam[idx] && !nextOppTeam[idx].isFainted) {
         nextOppTeam[idx].turnsOnField = (nextOppTeam[idx].turnsOnField || 1) + 1;
       }
@@ -818,18 +870,18 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     // End-of-Turn Weather & Terrain Effects
     // 1. Grassy Terrain HP recovery (1/16 max HP to alive grounded active Pokemon)
     if (activeField.terrain === 'Grassy') {
-      [...myActiveIndices.map((i) => nextMyTeam[i]), ...oppActiveIndices.map((i) => nextOppTeam[i])].forEach((pkmn) => {
+      [...hostActiveSlots.map((i) => nextMyTeam[i]), ...guestActiveSlots.map((i) => nextOppTeam[i])].forEach((pkmn) => {
         if (pkmn && !pkmn.isFainted && pkmn.currentHp > 0 && pkmn.currentHp < pkmn.maxStats.hp && isGrounded(pkmn)) {
           const healAmount = Math.max(1, Math.floor(pkmn.maxStats.hp / 16));
           pkmn.currentHp = Math.min(pkmn.maxStats.hp, pkmn.currentHp + healAmount);
-          addLog(`🌿 Grassy Terrain restored HP to ${pkmn.nickname}! (+${healAmount} HP)`);
+          pushLog(`🌿 Grassy Terrain restored HP to ${pkmn.nickname}! (+${healAmount} HP)`);
         }
       });
     }
 
     // 2. Sandstorm chip damage (1/16 max HP to non-Rock/Steel/Ground active Pokemon)
     if (activeField.weather === 'Sandstorm') {
-      [...myActiveIndices.map((i) => nextMyTeam[i]), ...oppActiveIndices.map((i) => nextOppTeam[i])].forEach((pkmn) => {
+      [...hostActiveSlots.map((i) => nextMyTeam[i]), ...guestActiveSlots.map((i) => nextOppTeam[i])].forEach((pkmn) => {
         if (pkmn && !pkmn.isFainted && pkmn.currentHp > 0) {
           const types = pkmn.activeTypes || pkmn.species.types;
           const isImmune =
@@ -842,10 +894,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           if (!isImmune) {
             const chip = Math.max(1, Math.floor(pkmn.maxStats.hp / 16));
             pkmn.currentHp = Math.max(0, pkmn.currentHp - chip);
-            addLog(`⏳ ${pkmn.nickname} is buffeted by the sandstorm! (-${chip} HP)`);
+            pushLog(`⏳ ${pkmn.nickname} is buffeted by the sandstorm! (-${chip} HP)`);
             if (pkmn.currentHp <= 0) {
               pkmn.isFainted = true;
-              addLog(`${pkmn.nickname} fainted from the sandstorm!`);
+              pushLog(`${pkmn.nickname} fainted from the sandstorm!`);
             }
           }
         }
@@ -856,35 +908,29 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     if (activeField.weather && activeField.weather !== 'Clear') {
       activeField.weatherTurns = (activeField.weatherTurns || 5) - 1;
       if (activeField.weatherTurns <= 0) {
-        addLog(`☀️ The ${activeField.weather.toLowerCase()} cleared up!`);
+        pushLog(`☀️ The ${activeField.weather.toLowerCase()} cleared up!`);
         activeField.weather = 'Clear';
       }
     }
     if (activeField.terrain && activeField.terrain !== 'None') {
       activeField.terrainTurns = (activeField.terrainTurns || 5) - 1;
       if (activeField.terrainTurns <= 0) {
-        addLog(`✨ The ${activeField.terrain.toLowerCase()} terrain faded away!`);
+        pushLog(`✨ The ${activeField.terrain.toLowerCase()} terrain faded away!`);
         activeField.terrain = 'None';
       }
     }
     if (activeField.auroraVeilTeam1 && activeField.auroraVeilTeam1 > 0) {
       activeField.auroraVeilTeam1 -= 1;
-      if (activeField.auroraVeilTeam1 <= 0) addLog(`Your team's Aurora Veil wore off!`);
+      if (activeField.auroraVeilTeam1 <= 0) pushLog(`Host's Aurora Veil wore off!`);
     }
     if (activeField.auroraVeilTeam2 && activeField.auroraVeilTeam2 > 0) {
       activeField.auroraVeilTeam2 -= 1;
-      if (activeField.auroraVeilTeam2 <= 0) addLog(`Opposing team's Aurora Veil wore off!`);
+      if (activeField.auroraVeilTeam2 <= 0) pushLog(`Opposing Aurora Veil wore off!`);
     }
 
-    setFieldConditions(activeField);
-    setMyTeamState(nextMyTeam);
-    setOpponentTeamState(nextOppTeam);
-
-    // Replacements are ONLY sent out after everyone's turn is finished!
-
-    // 4. Process CPU / Opponent replacements
-    let updatedOppActive = [...oppActiveIndices];
-    oppActiveIndices.forEach((oppIdx, slotNum) => {
+    // 4. Process Guest / Opponent replacements
+    let updatedOppActive = [...guestActiveSlots];
+    guestActiveSlots.forEach((oppIdx, slotNum) => {
       const oppMon = nextOppTeam[oppIdx];
       if (oppMon && (oppMon.isFainted || oppMon.currentHp <= 0)) {
         const availableBenchIdx = nextOppTeam.findIndex(
@@ -893,62 +939,174 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         if (availableBenchIdx !== -1) {
           updatedOppActive[slotNum] = availableBenchIdx;
           nextOppTeam[availableBenchIdx].turnsOnField = 1;
-          addLog(`⚡ Opponent sent out ${nextOppTeam[availableBenchIdx].nickname}!`);
-          activeField = checkEntranceAbilities(nextOppTeam[availableBenchIdx], activeField);
-          setFieldConditions(activeField);
+          pushLog(`⚡ Opponent sent out ${nextOppTeam[availableBenchIdx].nickname}!`);
+          activeField = checkEntranceAbilities(nextOppTeam[availableBenchIdx], activeField, pushLog);
         }
       }
     });
-    setOppActiveIndices(updatedOppActive);
 
-    // 5. Check Win / Loss condition immediately
+    // 5. Process Host / Player replacements
+    let updatedMyActive = [...hostActiveSlots];
+    hostActiveSlots.forEach((myIdx, slotNum) => {
+      const myMon = nextMyTeam[myIdx];
+      if (myMon && (myMon.isFainted || myMon.currentHp <= 0)) {
+        const availableBenchIdx = nextMyTeam.findIndex(
+          (p, i) => !updatedMyActive.includes(i) && !p.isFainted && p.currentHp > 0
+        );
+        if (availableBenchIdx !== -1) {
+          updatedMyActive[slotNum] = availableBenchIdx;
+          nextMyTeam[availableBenchIdx].turnsOnField = 1;
+          pushLog(`⚡ Go, ${nextMyTeam[availableBenchIdx].nickname}!`);
+          activeField = checkEntranceAbilities(nextMyTeam[availableBenchIdx], activeField, pushLog);
+        }
+      }
+    });
+
+    // 6. Check Win / Loss condition immediately
+    let turnWinner: string | null = null;
     const myAllFainted = nextMyTeam.every((p) => p.isFainted || p.currentHp <= 0);
     const oppAllFainted = nextOppTeam.every((p) => p.isFainted || p.currentHp <= 0);
 
     if (myAllFainted && oppAllFainted) {
-      setWinner('Draw');
-      addLog('The battle ended in a Draw!');
-      setIsTurnProcessing(false);
-      return;
+      turnWinner = 'Draw';
+      pushLog('The battle ended in a Draw!');
     } else if (oppAllFainted) {
-      setWinner('Player');
-      addLog('You won the Pokémon Champion battle!');
-      setIsTurnProcessing(false);
-      return;
+      turnWinner = 'Player';
+      pushLog('You won the Pokémon Champion battle!');
     } else if (myAllFainted) {
-      setWinner('Opponent');
-      addLog('Opponent won the battle!');
-      setIsTurnProcessing(false);
-      return;
+      turnWinner = 'Opponent';
+      pushLog('Opponent won the battle!');
+    } else {
+      pushLog('Turn finished! Choose your next moves.');
     }
 
-    // 6. Check Player fainted active slots requiring replacement
-    const faintedPlayerSlots: FaintedSlotReplacement[] = [];
-    myActiveIndices.forEach((myIdx, slotNum) => {
-      const myMon = nextMyTeam[myIdx];
-      if (myMon && (myMon.isFainted || myMon.currentHp <= 0)) {
-        const hasBenchAvailable = nextMyTeam.some(
-          (p, i) => !myActiveIndices.includes(i) && !p.isFainted && p.currentHp > 0
-        );
-        if (hasBenchAvailable) {
-          faintedPlayerSlots.push({
-            activeSlotIndex: slotNum,
-            faintedMonName: myMon.nickname
-          });
-        }
-      }
+    return {
+      nextHostTeam: nextMyTeam,
+      nextGuestTeam: nextOppTeam,
+      activeField,
+      turnLogs,
+      winner: turnWinner,
+      nextHostActive: updatedMyActive,
+      nextGuestActive: updatedOppActive
+    };
+  };
+
+  const executeAuthoritativeTurn = (hostActs: BattleAction[], guestActs: BattleAction[]) => {
+    setIsTurnProcessing(true);
+    const turnResult = resolveTurnCore(
+      hostActs,
+      guestActs,
+      myTeamStateRef.current,
+      opponentTeamStateRef.current,
+      fieldConditionsRef.current,
+      myActiveIndicesRef.current,
+      oppActiveIndicesRef.current
+    );
+
+    // Send Authoritative GAME_STATE_UPDATE to Guest
+    peerManager.sendMessage('GAME_STATE_UPDATE', {
+      hostTeam: turnResult.nextHostTeam,
+      guestTeam: turnResult.nextGuestTeam,
+      fieldConditions: turnResult.activeField,
+      logs: turnResult.turnLogs,
+      winner: turnResult.winner,
+      hostActiveIndices: turnResult.nextHostActive,
+      guestActiveIndices: turnResult.nextGuestActive
     });
 
-    if (faintedPlayerSlots.length > 0) {
-      setPendingReplacements(faintedPlayerSlots);
-      addLog(`⚠️ ${faintedPlayerSlots.map((s) => s.faintedMonName).join(' and ')} fainted! Choose a Pokémon to send out.`);
-      setIsTurnProcessing(false);
-    } else {
-      setPendingActions([]);
-      setSelectedActorIndex(0);
-      setIsTurnProcessing(false);
-      addLog('Turn finished! Choose your next moves.');
+    // Update Host state
+    setMyTeamState(turnResult.nextHostTeam);
+    setOpponentTeamState(turnResult.nextGuestTeam);
+    setFieldConditions(turnResult.activeField);
+    setMyActiveIndices(turnResult.nextHostActive);
+    setOppActiveIndices(turnResult.nextGuestActive);
+    if (turnResult.winner) setWinner(turnResult.winner);
+    turnResult.turnLogs.forEach(addLog);
+
+    hostPendingActionsRef.current = null;
+    guestPendingActionsRef.current = null;
+    setPendingActions([]);
+    setSelectedActorIndex(0);
+    setIsWaitingForOpponentTurn(false);
+    setIsTurnProcessing(false);
+  };
+
+  const handleIncomingGameStateUpdate = (payload: any) => {
+    setMyTeamState(payload.guestTeam);
+    setOpponentTeamState(payload.hostTeam);
+    setFieldConditions(payload.fieldConditions);
+    setMyActiveIndices(payload.guestActiveIndices);
+    setOppActiveIndices(payload.hostActiveIndices);
+    if (payload.winner) {
+      if (payload.winner === 'Player') setWinner('Opponent');
+      else if (payload.winner === 'Opponent') setWinner('Player');
+      else setWinner(payload.winner);
     }
+    if (payload.logs && Array.isArray(payload.logs)) {
+      payload.logs.forEach(addLog);
+    }
+
+    setPendingActions([]);
+    setSelectedActorIndex(0);
+    setIsWaitingForOpponentTurn(false);
+    setIsTurnProcessing(false);
+  };
+
+  useEffect(() => {
+    if (roomId === 'LOCAL_SOLO') return;
+
+    const handleMsg = (msg: NetworkMessage) => {
+      if (msg.type === 'TEAM_SUBMIT') {
+        const oppMons: CustomPokemon[] = msg.payload.team;
+        oppSubmittedMonsRef.current = oppMons;
+        if (mySubmittedMonsRef.current) {
+          startBattleWithTeams(mySubmittedMonsRef.current, oppMons);
+        }
+      } else if (msg.type === 'TURN_ACTION') {
+        if (isHost) {
+          guestPendingActionsRef.current = msg.payload.actions;
+          if (hostPendingActionsRef.current) {
+            executeAuthoritativeTurn(hostPendingActionsRef.current, msg.payload.actions);
+          } else {
+            addLog('⚡ Opponent has locked in their moves!');
+          }
+        }
+      } else if (msg.type === 'GAME_STATE_UPDATE') {
+        handleIncomingGameStateUpdate(msg.payload);
+      }
+    };
+
+    peerManager.setMessageCallback(handleMsg);
+
+    return () => {
+      peerManager.setMessageCallback(undefined);
+    };
+  });
+
+  const resolveSoloTurn = (myActs: BattleAction[], aiActs: BattleAction[]) => {
+    setIsTurnProcessing(true);
+    const turnResult = resolveTurnCore(
+      myActs,
+      aiActs,
+      myTeamStateRef.current,
+      opponentTeamStateRef.current,
+      fieldConditionsRef.current,
+      myActiveIndicesRef.current,
+      oppActiveIndicesRef.current
+    );
+
+    setMyTeamState(turnResult.nextHostTeam);
+    setOpponentTeamState(turnResult.nextGuestTeam);
+    setFieldConditions(turnResult.activeField);
+    setMyActiveIndices(turnResult.nextHostActive);
+    setOppActiveIndices(turnResult.nextGuestActive);
+    if (turnResult.winner) setWinner(turnResult.winner);
+    turnResult.turnLogs.forEach(addLog);
+
+    setPendingActions([]);
+    setSelectedActorIndex(0);
+    setIsWaitingForOpponentTurn(false);
+    setIsTurnProcessing(false);
   };
 
   const handleChooseReplacement = (benchTeamIndex: number) => {
@@ -962,7 +1120,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
     const sentMon = myTeamState[benchTeamIndex];
     if (sentMon) {
-      sentMon.turnsOnField = 1;
+      setMyTeamState((prev) => prev.map((p, i) => (i === benchTeamIndex ? { ...p, turnsOnField: 1 } : p)));
       addLog(`✨ Go, ${sentMon.nickname}!`);
       setFieldConditions((prev) => checkEntranceAbilities(sentMon, prev));
     }
@@ -998,13 +1156,24 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           </div>
           <button
             className="btn-primary"
-            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: selectedPickIds.length < requiredPicks ? 0.5 : 1, cursor: selectedPickIds.length < requiredPicks ? 'not-allowed' : 'pointer' }}
-            disabled={selectedPickIds.length < requiredPicks}
+            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam) ? 0.5 : 1, cursor: (selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam) ? 'not-allowed' : 'pointer' }}
+            disabled={selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam}
             onClick={handleConfirmTeamSelection}
           >
             <Sparkles size={16} /> Confirm & Enter ({selectedPickIds.length} / {requiredPicks})
           </button>
         </div>
+
+        {isWaitingForOpponentTeam && (
+          <div className="glass-panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', textAlign: 'center', borderColor: 'var(--accent-cyan)', backgroundColor: 'rgba(6, 182, 212, 0.08)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem' }}>
+              <div style={{ width: '18px', height: '18px', border: '2px solid var(--accent-cyan)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--accent-cyan)' }}>
+                Team confirmed! Waiting for opponent to select their team...
+              </span>
+            </div>
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
           {fullTeam.map((pkmn) => {
@@ -1394,6 +1563,22 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
                     </div>
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {isWaitingForOpponentTurn && !winner && (
+            <div className="glass-panel" style={{ padding: '2.5rem', textAlign: 'center', borderColor: 'var(--primary)', backgroundColor: 'rgba(99, 102, 241, 0.08)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{ width: '22px', height: '22px', border: '3px solid var(--primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                  <span style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text)' }}>
+                    Moves Locked In!
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
+                  Waiting for {roomId === 'LOCAL_SOLO' ? 'CPU' : 'opponent'} to complete their turn choices...
+                </p>
               </div>
             </div>
           )}

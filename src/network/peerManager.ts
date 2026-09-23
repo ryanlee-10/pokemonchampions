@@ -27,15 +27,29 @@ export class PeerManager {
 
   constructor() {}
 
+  public setMessageCallback(callback?: (msg: NetworkMessage) => void) {
+    this.onMessageCallback = callback;
+  }
+
+  public setDisconnectCallback(callback?: () => void) {
+    this.onDisconnectCallback = callback;
+  }
+
+  public isConnected(): boolean {
+    return Boolean(this.conn && this.conn.open);
+  }
+
   public init(
     customId?: string,
     onConnect?: () => void,
     onMessage?: (msg: NetworkMessage) => void,
     onDisconnect?: () => void
   ): Promise<string> {
-    this.onConnectCallback = onConnect;
-    this.onMessageCallback = onMessage;
-    this.onDisconnectCallback = onDisconnect;
+    this.disconnect();
+
+    if (onConnect) this.onConnectCallback = onConnect;
+    if (onMessage) this.onMessageCallback = onMessage;
+    if (onDisconnect) this.onDisconnectCallback = onDisconnect;
 
     return new Promise((resolve, reject) => {
       // Use public Google STUN servers for robust zero-config NAT/firewall traversal
@@ -117,8 +131,18 @@ export class PeerManager {
   }
 
   public disconnect() {
-    if (this.conn) this.conn.close();
-    if (this.peer) this.peer.destroy();
+    if (this.conn) {
+      try {
+        this.conn.close();
+      } catch {}
+      this.conn = null;
+    }
+    if (this.peer) {
+      try {
+        this.peer.destroy();
+      } catch {}
+      this.peer = null;
+    }
   }
 }
 
