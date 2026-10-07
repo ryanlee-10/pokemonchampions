@@ -399,18 +399,22 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     if (updated.length >= alivePlayerActiveIndices.length) {
       if (roomId === 'LOCAL_SOLO') {
         // AI Solo turn generation for living active Pokemon
-        const aiActions: BattleAction[] = aliveOppActiveIndices.map((oppIdx, slot) => {
+        const aiActions: BattleAction[] = aliveOppActiveIndices.map((oppIdx) => {
           const oppPkmn = opponentTeamState[oppIdx];
           const availableMoves = oppPkmn.moves.filter((m) => m.currentPp > 0);
           const chosenMove = availableMoves.length > 0
             ? availableMoves[Math.floor(Math.random() * availableMoves.length)]
             : oppPkmn.moves[0];
+            
+          const randomTargetTeamIdx = alivePlayerActiveIndices[Math.floor(Math.random() * alivePlayerActiveIndices.length)] ?? myActiveIndices[0];
+          const targetSlot = myActiveIndices.indexOf(randomTargetTeamIdx);
+
           return {
             playerId: 'cpu',
             actorIndex: oppActiveIndices.indexOf(oppIdx),
             type: 'MOVE',
             moveId: chosenMove.move.id,
-            targetSlot: Math.floor(Math.random() * Math.max(1, alivePlayerActiveIndices.length))
+            targetSlot: Math.max(0, targetSlot)
           };
         });
 

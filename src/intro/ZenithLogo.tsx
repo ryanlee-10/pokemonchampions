@@ -34,10 +34,7 @@ export const ZenithLogo: React.FC<LogoProps> = ({
         </linearGradient>
         <clipPath id="zl-clip-top"><rect x="0" y="0" width="400" height="190" /></clipPath>
         <clipPath id="zl-clip-bot"><rect x="0" y="210" width="400" height="190" /></clipPath>
-        <filter id="zl-glow" x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur stdDeviation="6" result="b" />
-          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
+
       </defs>
 
       {!trace && (
@@ -48,7 +45,7 @@ export const ZenithLogo: React.FC<LogoProps> = ({
         </>
       )}
 
-      <g filter="url(#zl-glow)" fill="none" stroke="url(#zl-line)" strokeWidth="7" strokeLinecap="round">
+      <g style={{ filter: 'drop-shadow(0 0 10px rgba(167, 139, 250, 0.8))' }} fill="none" stroke="url(#zl-line)" strokeWidth="7" strokeLinecap="round">
         <motion.circle cx="200" cy="200" r="170" {...stroke} />
         <motion.path d="M30 200 H150 M250 200 H370" {...stroke} />
         <motion.circle cx="200" cy="200" r="50" {...stroke} />
