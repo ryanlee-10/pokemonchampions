@@ -7,7 +7,15 @@ export type NetworkMessageType =
   | 'GAME_START'
   | 'TURN_ACTION'
   | 'GAME_STATE_UPDATE'
-  | 'CHAT_MESSAGE';
+  | 'CHAT_MESSAGE'
+  | 'ROOM_HELLO'
+  | 'BATTLE_REQUEST'
+  | 'BATTLE_RESPONSE'
+  | 'TEAM_PREVIEW'
+  | 'PICKS_LOCKED'
+  | 'FORFEIT'
+  | 'REMATCH'
+  | 'LEAVE_MATCH';
 
 export interface NetworkMessage {
   type: NetworkMessageType;
@@ -19,6 +27,7 @@ export class PeerManager {
   private peer: Peer | null = null;
   private conn: DataConnection | null = null;
   public myPeerId: string = '';
+  public roomCode: string = '';
   public isHost: boolean = false;
 
   private onMessageCallback?: (msg: NetworkMessage) => void;
@@ -66,6 +75,7 @@ export class PeerManager {
 
       this.peer.on('open', (id) => {
         this.myPeerId = id;
+        this.roomCode = id;
         resolve(id);
       });
 
@@ -92,6 +102,7 @@ export class PeerManager {
 
       this.conn = this.peer.connect(hostId, { reliable: true });
       this.isHost = false;
+      this.roomCode = hostId;
 
       this.conn.on('open', () => {
         this.setupConnectionHandlers();

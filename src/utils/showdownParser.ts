@@ -31,7 +31,7 @@ export function exportToShowdown(pkmn: CustomPokemon): string {
 export function generateRandomCpuTeam(): CustomPokemon[] {
   // Select 4 distinct random species from POKEMON_ROSTER for the CPU opponent
   const shuffled = [...POKEMON_ROSTER].sort(() => 0.5 - Math.random());
-  const selectedSpecies = shuffled.slice(0, 4);
+  const selectedSpecies = shuffled.slice(0, 6);
   const commonItems = ['none'];
 
   return selectedSpecies.map((spec, idx) => {

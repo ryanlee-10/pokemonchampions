@@ -1,0 +1,4 @@
+{
+  "_readme": "Drop MP3s in public/audio. 'intro' plays first (dropAt = ms when the music drop hits). 'tracks' are shuffled afterwards, never repeating back-to-back. Remove 'intro' to skip.",
+  "tracks": []
+}

@@ -1,16 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import type { BattleFormat, CustomPokemon, PlayerTeam } from './types/pokemon';
 import { POKEMON_ROSTER } from './data/pokemonRoster';
 import { MainMenu } from './components/MainMenu';
 import { Lobby } from './components/Lobby';
-import { TrainingScreen } from './components/TrainingScreen';
-import { BoxesScreen } from './components/BoxesScreen';
 import { BattleScreen } from './components/BattleScreen';
-import { BattleCalculator } from './components/BattleCalculator';
-import { Swords, Dumbbell, Package, Home, Calculator } from 'lucide-react';
-
-type ViewMode = 'MAIN_MENU' | 'BATTLE_LOBBY' | 'TRAINING' | 'BOXES' | 'CALCULATOR' | 'BATTLE';
-
+import { LeftRail } from './app/LeftRail';
+import { MusicPopover } from './app/MusicPopover';
+import { SettingsPanel } from './app/SettingsPanel';
+import { useAppStore } from './app/store';
+import type { Screen } from './app/store';
+import { audioManager } from './audio/audioManager';
+import { IntroSequence } from './intro/IntroSequence';
+import { PreMenu } from './intro/PreMenu';
+import { CpuSetup } from './screens/CpuSetup';
+import { ProfileScreen } from './screens/ProfileScreen';
+import { TeambuilderHub } from './screens/TeambuilderHub';
+import type { TeambuilderTab } from './screens/TeambuilderHub';
+import './styles/zenith.css';
 
 function createStarterPokemon(speciesId: string): CustomPokemon {
   const spec = POKEMON_ROSTER.find((s) => s.id === speciesId) || POKEMON_ROSTER[0];
@@ -23,163 +30,167 @@ function createStarterPokemon(speciesId: string): CustomPokemon {
     ability: spec.abilities[0] || 'Overgrow',
     nature: 'Adamant',
     evs: { hp: 32, attack: 32, defense: 2, spAtk: 0, spDef: 0, speed: 0 },
-    moves: spec.learnset.slice(0, 4)
+    moves: spec.learnset.slice(0, 4),
   };
 }
 
-export function App() {
-  const [view, setView] = useState<ViewMode>('MAIN_MENU');
-  const [format, setFormat] = useState<BattleFormat>('Doubles');
-  
-  const [teams, setTeams] = useState<PlayerTeam[]>(() => [
-    {
-      playerId: 'player',
-      name: 'Alpha Squad',
-      pokemon: ['pawmot', 'absol', 'politoed', 'excadrill', 'volcarona', 'maushold'].map(createStarterPokemon)
-    }
-  ]);
-  const [activeTeamIdx, setActiveTeamIdx] = useState<number>(0);
-  const [pcBox, setPcBox] = useState<CustomPokemon[]>(() =>
-    POKEMON_ROSTER.map(p => createStarterPokemon(p.id))
-  );
+type Phase = 'INTRO' | 'PREMENU' | 'APP';
 
-  const [isHost, setIsHost] = useState<boolean>(true);
-  const [roomId, setRoomId] = useState<string>('LOCAL_SOLO');
+export function App() {
+  const [phase, setPhase] = useState<Phase>('INTRO');
+  const [screen, setScreen] = useState<Screen>('MAIN_MENU');
+  const [tbTab, setTbTab] = useState<TeambuilderTab>('Boxes');
+  const [format, setFormat] = useState<BattleFormat>('Doubles');
+  const settings = useAppStore((s) => s.settings);
+
+  const [teams, setTeams] = useState<PlayerTeam[]>(() => {
+    const saved = localStorage.getItem('zenith_teams');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error('Failed to parse saved teams'); }
+    }
+    return [
+      {
+        playerId: 'player',
+        name: 'Alpha Squad',
+        pokemon: ['pawmot', 'absol', 'politoed', 'excadrill', 'volcarona', 'maushold'].map(createStarterPokemon),
+      },
+    ];
+  });
+  const [activeTeamIdx, setActiveTeamIdx] = useState(0);
+  const [pcBox, setPcBox] = useState<CustomPokemon[]>(() => {
+    const saved = localStorage.getItem('zenith_pcbox');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error('Failed to parse saved PC Box'); }
+    }
+    return POKEMON_ROSTER.map((p) => createStarterPokemon(p.id));
+  });
+  const [isHost, setIsHost] = useState(true);
+  const [roomId, setRoomId] = useState('LOCAL_SOLO');
 
   const activeTeam = teams[activeTeamIdx]?.pokemon || [];
 
-  const handleUpdateActiveTeam = (newTeamPkmn: CustomPokemon[]) => {
-    setTeams((prevTeams) =>
-      prevTeams.map((t, idx) => (idx === activeTeamIdx ? { ...t, pokemon: newTeamPkmn } : t))
-    );
+  // Persist state to localStorage
+  useEffect(() => {
+    localStorage.setItem('zenith_teams', JSON.stringify(teams));
+  }, [teams]);
+
+  useEffect(() => {
+    localStorage.setItem('zenith_pcbox', JSON.stringify(pcBox));
+  }, [pcBox]);
+
+  // Audio volume sync + mute when unfocused
+  useEffect(() => {
+    audioManager.setVolumes(settings.masterVolume, settings.musicVolume);
+  }, [settings.masterVolume, settings.musicVolume]);
+
+  useEffect(() => {
+    if (!settings.muteWhenBlurred) return;
+    const onVis = () =>
+      audioManager.setVolumes(document.hidden ? 0 : settings.masterVolume, settings.musicVolume);
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [settings.muteWhenBlurred, settings.masterVolume, settings.musicVolume]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('reduce-motion', settings.reducedMotion);
+  }, [settings.reducedMotion]);
+
+  const handleUpdateActiveTeam = (newTeamPkmn: CustomPokemon[]) =>
+    setTeams((prev) => prev.map((t, idx) => (idx === activeTeamIdx ? { ...t, pokemon: newTeamPkmn } : t)));
+
+  const handleUpdatePokemonInRoster = (updated: CustomPokemon) => {
+    handleUpdateActiveTeam(activeTeam.map((p) => (p.id === updated.id ? updated : p)));
+    if (pcBox.some((p) => p.id === updated.id)) setPcBox(pcBox.map((p) => (p.id === updated.id ? updated : p)));
   };
 
   const handleStartGame = (hostFlag: boolean, roomCode: string) => {
     setIsHost(hostFlag);
     setRoomId(roomCode);
-    setView('BATTLE');
+    setScreen('BATTLE');
   };
 
-  const handleUpdatePokemonInRoster = (updatedPkmn: CustomPokemon) => {
-    handleUpdateActiveTeam(activeTeam.map((p) => (p.id === updatedPkmn.id ? updatedPkmn : p)));
-    if (pcBox.some((p) => p.id === updatedPkmn.id)) {
-      setPcBox(pcBox.map((p) => (p.id === updatedPkmn.id ? updatedPkmn : p)));
-    }
+  const openTeambuilder = (tab: TeambuilderTab) => {
+    setTbTab(tab);
+    setScreen('TEAMBUILDER');
   };
 
-  const allPokemonForTraining = [...activeTeam, ...pcBox];
+  if (phase === 'INTRO') {
+    return <IntroSequence onFinish={() => { useAppStore.getState().setIntroDone(true); setPhase('PREMENU'); }} />;
+  }
 
   return (
-    <div className="app-container">
-      {/* Sidebar Navigation */}
-      <aside className="app-sidebar">
-        <div
-          className="brand-header"
-          onClick={() => setView('MAIN_MENU')}
-        >
-          <Swords size={28} className="brand-icon" />
-          <span className="brand-title">Pokémon<br/>Champions</span>
-        </div>
-        
-        <nav className="sidebar-nav">
-          <button
-            className={`nav-button ${view === 'MAIN_MENU' ? 'active' : ''}`}
-            onClick={() => setView('MAIN_MENU')}
-          >
-            <Home size={18} /> Main Menu
-          </button>
-          <button
-            className={`nav-button ${view === 'BATTLE_LOBBY' ? 'active' : ''}`}
-            onClick={() => setView('BATTLE_LOBBY')}
-          >
-            <Swords size={18} /> Battle
-          </button>
-          <button
-            className={`nav-button ${view === 'TRAINING' ? 'active' : ''}`}
-            onClick={() => setView('TRAINING')}
-          >
-            <Dumbbell size={18} /> Training
-          </button>
-          <button
-            className={`nav-button ${view === 'BOXES' ? 'active' : ''}`}
-            onClick={() => setView('BOXES')}
-          >
-            <Package size={18} /> Boxes
-          </button>
-          <button
-            className={`nav-button ${view === 'CALCULATOR' ? 'active' : ''}`}
-            onClick={() => setView('CALCULATOR')}
-          >
-            <Calculator size={18} /> Calculator
-          </button>
-        </nav>
-      </aside>
+    <div className="zenith-app">
+      <AnimatePresence mode="wait">
+        {phase === 'PREMENU' && <PreMenu key="pre" onEnter={() => setPhase('APP')} />}
+      </AnimatePresence>
 
-      {/* Main Views */}
-      <main className="app-main">
-        {view === 'MAIN_MENU' && (
-          <MainMenu
-            onSelectBattle={() => setView('BATTLE_LOBBY')}
-            onSelectTraining={() => setView('TRAINING')}
-            onSelectBoxes={() => setView('BOXES')}
-            onSelectCalculator={() => setView('CALCULATOR')}
-            activeTeam={activeTeam}
-            pcBoxCount={pcBox.length}
-          />
-        )}
-
-
-        {view === 'BATTLE_LOBBY' && (
-          <Lobby
-            format={format}
-            onFormatChange={setFormat}
-            team={activeTeam}
-            teams={teams}
-            activeTeamIdx={activeTeamIdx}
-            onSelectTeamIdx={setActiveTeamIdx}
-            onBackToMenu={() => setView('MAIN_MENU')}
-            onStartGame={handleStartGame}
-          />
-        )}
-
-        {view === 'TRAINING' && (
-          <TrainingScreen
-            pokemonList={allPokemonForTraining}
-            onUpdatePokemon={handleUpdatePokemonInRoster}
-            onBackToMenu={() => setView('MAIN_MENU')}
-          />
-        )}
-
-        {view === 'BOXES' && (
-          <BoxesScreen
-            activeTeam={activeTeam}
-            pcBox={pcBox}
-            teams={teams}
-            onUpdateTeam={handleUpdateActiveTeam}
-            onUpdatePcBox={setPcBox}
-            onUpdateTeams={setTeams}
-            onBackToMenu={() => setView('MAIN_MENU')}
-          />
-        )}
-
-        {view === 'CALCULATOR' && (
-          <BattleCalculator
-            playerTeam={activeTeam}
-            onBack={() => setView('MAIN_MENU')}
-          />
-        )}
-
-
-        {view === 'BATTLE' && (
-          <BattleScreen
-            format={format}
-            playerTeam={activeTeam}
-            isHost={isHost}
-            roomId={roomId}
-            onExit={() => setView('MAIN_MENU')}
-          />
-        )}
-      </main>
+      {phase === 'APP' && (
+        <>
+          <LeftRail screen={screen} onNavigate={setScreen} />
+          <main className={`zenith-main ${screen === 'BATTLE' ? 'is-battle' : ''}`}>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={screen === 'TEAMBUILDER' ? `tb-${tbTab}` : screen}
+                className="screen-wrap"
+                initial={{ opacity: 0, y: 18, scale: 0.985, filter: 'blur(6px)' }}
+                animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, y: -12, scale: 0.99, filter: 'blur(4px)' }}
+                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+              >
+                {screen === 'MAIN_MENU' && (
+                  <MainMenu
+                    teamCount={teams.length}
+                    onMultiplayer={() => setScreen('MULTIPLAYER')}
+                    onCpu={() => setScreen('CPU')}
+                    onTeambuilder={() => openTeambuilder('Boxes')}
+                    onDamageCalc={() => openTeambuilder('Damage Calc')}
+                  />
+                )}
+                {screen === 'MULTIPLAYER' && (
+                  <Lobby
+                    format={format}
+                    onFormatChange={setFormat}
+                    team={activeTeam}
+                    teams={teams}
+                    activeTeamIdx={activeTeamIdx}
+                    onSelectTeamIdx={setActiveTeamIdx}
+                    onBackToMenu={() => setScreen('MAIN_MENU')}
+                    onStartGame={handleStartGame}
+                  />
+                )}
+                {screen === 'CPU' && (
+                  <CpuSetup onStart={(f) => { setFormat(f); handleStartGame(true, 'LOCAL_SOLO'); }} />
+                )}
+                {screen === 'TEAMBUILDER' && (
+                  <TeambuilderHub
+                    initialTab={tbTab}
+                    activeTeam={activeTeam}
+                    pcBox={pcBox}
+                    teams={teams}
+                    onUpdateTeam={handleUpdateActiveTeam}
+                    onUpdatePcBox={setPcBox}
+                    onUpdateTeams={setTeams}
+                    onUpdatePokemon={handleUpdatePokemonInRoster}
+                    onBackToMenu={() => setScreen('MAIN_MENU')}
+                  />
+                )}
+                {screen === 'PROFILE' && <ProfileScreen />}
+                {screen === 'BATTLE' && (
+                  <BattleScreen
+                    format={format}
+                    playerTeam={activeTeam}
+                    isHost={isHost}
+                    roomId={roomId}
+                    onExit={() => setScreen('MAIN_MENU')}
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </main>
+          <MusicPopover />
+          <SettingsPanel />
+        </>
+      )}
     </div>
   );
 }

@@ -11,13 +11,22 @@ import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
 import { calculateDamage, isGrounded } from '../engine/damageCalc';
+import { resolveTurnCore } from '../engine/battleEngine';
 import { peerManager } from '../network/peerManager';
 import type { NetworkMessage } from '../network/peerManager';
 import { generateRandomCpuTeam } from '../utils/showdownParser';
-import { HELD_ITEMS } from '../data/items';
-import { Award, ArrowLeft, Shield, Sparkles, Calculator, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { BattleCalculator } from './BattleCalculator';
+import { useAppStore, animSpeedFactor } from '../app/store';
+import type { BattleEvent, BattleSnap, ChatMessage, LogEntry, LogKind, LogMeta, MatchStats, StageStat } from '../battle/types';
+import { STAT_ORDER } from '../battle/types';
+import { TeamPreview } from '../battle/TeamPreview';
+import { MatchIntro } from '../battle/MatchIntro';
+import { BattleView } from '../battle/BattleView';
+import { ResultScreen } from '../battle/ResultScreen';
 
+const PROTECT_MOVES = ['protect', 'detect', 'spiky_shield', 'baneful_bunker', 'king_s_shield', 'silk_trap', 'burning_bulwark'];
+const INTIMIDATE_IMMUNE = ['Inner Focus', 'Own Tempo', 'Oblivious', 'Scrappy', 'Clear Body', 'White Smoke', 'Hyper Cutter', 'Full Metal Body', 'Guard Dog'];
 
 interface BattleScreenProps {
   format: BattleFormat;
@@ -25,6 +34,9 @@ interface BattleScreenProps {
   isHost: boolean;
   roomId: string;
   onExit: () => void;
+  onRematch: () => void;
+  opponentTeam?: CustomPokemon[];
+  opponentName?: string;
 }
 
 export const BattleScreen: React.FC<BattleScreenProps> = ({
@@ -32,15 +44,19 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   playerTeam,
   isHost,
   roomId,
-  onExit
+  onExit,
+  onRematch,
+  opponentTeam,
+  opponentName
 }) => {
+  const profileName = useAppStore((s) => s.profile.name);
   // Convert custom team to initial active state
-  const initializeTeamState = (team: CustomPokemon[]): ActivePokemonState[] => {
+  const initializeTeamState = (team: CustomPokemon[], prefix = ''): ActivePokemonState[] => {
     return team.map((p) => {
       const spec = POKEMON_ROSTER.find((s) => s.id === p.speciesId)!;
       const stats = calculateAllStats(p, spec);
       return {
-        instanceId: p.id,
+        instanceId: prefix + p.id,
         species: spec,
         nickname: p.nickname || spec.name,
         level: p.level || 50,
@@ -66,8 +82,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   };
 
   const requiredPicks = format === 'Singles' ? 3 : 4;
-  const [isSelectingTeam, setIsSelectingTeam] = useState<boolean>(true);
+  const [phase, setPhase] = useState<'PREVIEW' | 'INTRO' | 'BATTLE'>('PREVIEW');
   const [selectedPickIds, setSelectedPickIds] = useState<string[]>([]);
+  const [cpuFullTeam] = useState<CustomPokemon[]>(() => generateRandomCpuTeam());
+  const previewOppTeam: CustomPokemon[] = roomId === 'LOCAL_SOLO' ? cpuFullTeam : (opponentTeam ?? []);
 
   const handleTogglePick = (id: string) => {
     if (selectedPickIds.includes(id)) {
@@ -79,48 +97,84 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     }
   };
 
+  type Logger = (msg: string, meta?: LogMeta) => void;
+
   const checkEntranceAbilities = (
     enteringMon: ActivePokemonState,
     currentFields: BattleFieldConditions,
-    logger?: (msg: string) => void
+    logger?: Logger,
+    foes?: ActivePokemonState[]
   ): BattleFieldConditions => {
     const updated = { ...currentFields };
-    const logFn = logger || addLog;
+    const logFn: Logger = logger || addLog;
     const ab = enteringMon.ability;
+    const announce = () =>
+      logFn(`${enteringMon.nickname}'s ${ab}`, { kind: 'ability', id: enteringMon.instanceId, field: { ...updated } });
+    const effect = (text: string) => logFn(text, { kind: 'field', field: { ...updated } });
     if (ab === 'Grassy Surge') {
       updated.terrain = 'Grassy';
       updated.terrainTurns = 5;
-      logFn(`🌿 ${enteringMon.nickname}'s Grassy Surge turned the ground green!`);
+      announce();
+      effect('Grass grew to cover the battlefield!');
     } else if (ab === 'Psychic Surge') {
       updated.terrain = 'Psychic';
       updated.terrainTurns = 5;
-      logFn(`🔮 ${enteringMon.nickname}'s Psychic Surge made the ground weird!`);
+      announce();
+      effect('The battlefield got weird!');
     } else if (ab === 'Electric Surge' || ab === 'Hadron Engine') {
       updated.terrain = 'Electric';
       updated.terrainTurns = 5;
-      logFn(`⚡ ${enteringMon.nickname}'s ${ab} electrified the battlefield!`);
+      announce();
+      effect('An electric current ran across the battlefield!');
     } else if (ab === 'Misty Surge') {
       updated.terrain = 'Misty';
       updated.terrainTurns = 5;
-      logFn(`🌫️ ${enteringMon.nickname}'s Misty Surge enveloped the field in mist!`);
+      announce();
+      effect('Mist swirled about the battlefield!');
     } else if (ab === 'Drought') {
       updated.weather = 'Sun';
       updated.weatherTurns = 5;
-      logFn(`☀️ ${enteringMon.nickname}'s Drought made the sunlight turn harsh!`);
+      announce();
+      effect('The sunlight turned harsh!');
     } else if (ab === 'Drizzle') {
       updated.weather = 'Rain';
       updated.weatherTurns = 5;
-      logFn(`🌧️ ${enteringMon.nickname}'s Drizzle made it start to rain!`);
+      announce();
+      effect('It started to rain!');
     } else if (ab === 'Sand Stream') {
       updated.weather = 'Sandstorm';
       updated.weatherTurns = 5;
-      logFn(`🏜️ ${enteringMon.nickname}'s Sand Stream whipped up a sandstorm!`);
+      announce();
+      effect('A sandstorm kicked up!');
     } else if (ab === 'Snow Warning') {
       updated.weather = 'Snow';
       updated.weatherTurns = 5;
-      logFn(`❄️ ${enteringMon.nickname}'s Snow Warning made snow fall!`);
+      announce();
+      effect('It started to snow!');
     } else if (ab === 'Intimidate') {
-      logFn(`🦁 ${enteringMon.nickname}'s Intimidate cut opposing Pokémon's Attack!`);
+      announce();
+      (foes || [])
+        .filter((f) => f && !f.isFainted && f.currentHp > 0)
+        .forEach((foe) => {
+          if (INTIMIDATE_IMMUNE.includes(foe.ability)) {
+            logFn(`${foe.nickname}'s ${foe.ability} prevents Attack loss!`, { kind: 'ability', id: foe.instanceId });
+            return;
+          }
+          const cur = foe.statStages.attack || 0;
+          if (cur <= -6) {
+            logFn(`${foe.nickname}'s Attack won't go any lower!`, { kind: 'stat', id: foe.instanceId });
+            return;
+          }
+          foe.statStages.attack = cur - 1;
+          logFn(`${foe.nickname}'s Attack dropped by 1 stage!`, { kind: 'stat', id: foe.instanceId, dir: 'down', stat: 'attack' });
+          if (foe.ability === 'Defiant') {
+            foe.statStages.attack = Math.min(6, foe.statStages.attack + 2);
+            logFn(`${foe.nickname}'s Defiant sharply raised its Attack!`, { kind: 'stat', id: foe.instanceId, dir: 'up', stat: 'attack' });
+          } else if (foe.ability === 'Competitive') {
+            foe.statStages.spAtk = Math.min(6, (foe.statStages.spAtk || 0) + 2);
+            logFn(`${foe.nickname}'s Competitive sharply raised its Sp. Atk!`, { kind: 'stat', id: foe.instanceId, dir: 'up', stat: 'spAtk' });
+          }
+        });
     }
     return updated;
   };
@@ -143,6 +197,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const [fieldConditions, setFieldConditions] = useState<BattleFieldConditions>({});
 
   // Synchronization refs for multiplayer
+  const logsHold = useRef<boolean>(false);
   const mySubmittedMonsRef = useRef<CustomPokemon[] | null>(null);
   const oppSubmittedMonsRef = useRef<CustomPokemon[] | null>(null);
   const hostPendingActionsRef = useRef<BattleAction[] | null>(null);
@@ -167,8 +222,9 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const [isWaitingForOpponentTurn, setIsWaitingForOpponentTurn] = useState<boolean>(false);
 
   const startBattleWithTeams = (myMons: CustomPokemon[], oppMons: CustomPokemon[]) => {
-    const initMyTeam = initializeTeamState(myMons);
-    const initOppTeam = initializeTeamState(oppMons);
+    const [myPrefix, oppPrefix] = isHost ? ['A_', 'B_'] : ['B_', 'A_'];
+    const initMyTeam = initializeTeamState(myMons, myPrefix);
+    const initOppTeam = initializeTeamState(oppMons, oppPrefix);
     const myActive = format === 'Singles' ? [0] : [0, 1];
     const oppActive = format === 'Singles' ? [0] : [0, 1];
 
@@ -176,22 +232,30 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     setOpponentTeamState(initOppTeam);
     setMyActiveIndices(myActive);
     setOppActiveIndices(oppActive);
-    setIsSelectingTeam(false);
     setIsWaitingForOpponentTeam(false);
+    setPhase('INTRO');
 
+    // Entrance abilities are announced after the match-intro screen finishes
+    logsHold.current = true;
     let initField: BattleFieldConditions = {};
-    myActive.forEach((idx) => {
-      if (initMyTeam[idx]) initField = checkEntranceAbilities(initMyTeam[idx], initField);
+    const myLeads = myActive.map((i) => initMyTeam[i]).filter(Boolean);
+    const oppLeads = oppActive.map((i) => initOppTeam[i]).filter(Boolean);
+    const hostLeads = isHost ? myLeads : oppLeads;
+    const guestLeads = isHost ? oppLeads : myLeads;
+    hostLeads.forEach((m) => {
+      initField = checkEntranceAbilities(m, initField, undefined, guestLeads);
     });
-    oppActive.forEach((idx) => {
-      if (initOppTeam[idx]) initField = checkEntranceAbilities(initOppTeam[idx], initField);
+    guestLeads.forEach((m) => {
+      initField = checkEntranceAbilities(m, initField, undefined, hostLeads);
     });
     setFieldConditions(initField);
     fieldConditionsRef.current = initField;
 
-    setBattleLog([
-      `Battle started in ${format} format! Bring ${requiredPicks} of 6 VGC rules applied.`
-    ]);
+    window.setTimeout(() => {
+      setPhase('BATTLE');
+      logsHold.current = false;
+      processLogQueue();
+    }, 3400);
   };
 
   const handleConfirmTeamSelection = () => {
@@ -315,6 +379,15 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const currentActorSlotIdx = alivePlayerActiveIndices[selectedActorIndex] ?? alivePlayerActiveIndices[0];
   const currentActorPkmn = myTeamState[currentActorSlotIdx];
 
+  const handleSelectSwitch = (teamIndex: number) => {
+    submitAction({
+      playerId: isHost ? 'host' : 'guest',
+      actorIndex: selectedActorIndex,
+      type: 'SWITCH',
+      switchToTeamIndex: teamIndex
+    });
+  };
+
   const submitAction = (action: BattleAction) => {
     const updated = [...pendingActions, action];
     setPendingActions(updated);
@@ -370,634 +443,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     }
   };
 
-  const resolveTurnCore = (
-    myActs: BattleAction[],
-    oppActs: BattleAction[],
-    currentHostTeam: ActivePokemonState[],
-    currentGuestTeam: ActivePokemonState[],
-    currentField: BattleFieldConditions,
-    hostActiveSlots: number[],
-    guestActiveSlots: number[]
-  ) => {
-    const turnLogs: string[] = [];
-    const pushLog = (txt: string) => {
-      turnLogs.push(txt);
-    };
 
-    // Deep clone team states and field
-    let nextMyTeam = currentHostTeam.map((p) => ({
-      ...p,
-      activeTypes: p.activeTypes ? [...p.activeTypes] : undefined,
-      statStages: { ...p.statStages },
-      moves: p.moves.map((m) => ({ ...m }))
-    }));
-    let nextOppTeam = currentGuestTeam.map((p) => ({
-      ...p,
-      activeTypes: p.activeTypes ? [...p.activeTypes] : undefined,
-      statStages: { ...p.statStages },
-      moves: p.moves.map((m) => ({ ...m }))
-    }));
-    let activeField: BattleFieldConditions = { ...currentField };
-
-    const alivePlayerActiveIndices = hostActiveSlots.filter((idx) => {
-      const p = nextMyTeam[idx];
-      return p && !p.isFainted && p.currentHp > 0;
-    });
-    const aliveOppActiveIndices = guestActiveSlots.filter((idx) => {
-      const p = nextOppTeam[idx];
-      return p && !p.isFainted && p.currentHp > 0;
-    });
-
-    const getEffectiveSpeed = (pkmn: ActivePokemonState | undefined, isPlayer: boolean, action?: BattleAction): number => {
-      if (!pkmn) return 0;
-
-      let baseSpeed = pkmn.maxStats.speed;
-      
-      // Look ahead for Mega Evolution speed update
-      if (action?.megaEvolve && !pkmn.isMegaEvolved && pkmn.species.megaForm) {
-        const megaForms = Array.isArray(pkmn.species.megaForm) ? pkmn.species.megaForm : [pkmn.species.megaForm];
-        const matchingMega = megaForms.find((mf) => mf.megaStoneId === pkmn.item);
-        if (matchingMega) {
-          const megaSpecies = { ...pkmn.species, baseStats: matchingMega.megaBaseStats };
-          const dummyCustom = {
-            id: pkmn.instanceId,
-            speciesId: pkmn.species.id,
-            nickname: pkmn.nickname,
-            level: pkmn.level,
-            item: pkmn.item,
-            ability: matchingMega.megaAbility,
-            nature: pkmn.originalNature || 'Hardy',
-            evs: pkmn.originalEvs || { hp: 0, attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 },
-            moves: []
-          };
-          baseSpeed = calculateAllStats(dummyCustom, megaSpecies).speed;
-        }
-      }
-
-      let spd = baseSpeed * ((pkmn.statStages?.speed && pkmn.statStages.speed !== 0) ? (pkmn.statStages.speed > 0 ? (2 + pkmn.statStages.speed) / 2 : 2 / (2 - pkmn.statStages.speed)) : 1);
-      if (pkmn.status === 'Paralysis' && pkmn.ability !== 'Quick Feet') {
-        spd = Math.floor(spd * 0.5);
-      }
-      if (pkmn.item === 'choice_scarf') {
-        spd = Math.floor(spd * 1.5);
-      }
-      if (activeField.weather === 'Rain' && pkmn.ability === 'Swift Swim') {
-        spd = Math.floor(spd * 2);
-      }
-      if (activeField.weather === 'Sun' && pkmn.ability === 'Chlorophyll') {
-        spd = Math.floor(spd * 2);
-      }
-      if (activeField.weather === 'Sandstorm' && pkmn.ability === 'Sand Rush') {
-        spd = Math.floor(spd * 2);
-      }
-      if (activeField.weather === 'Snow' && pkmn.ability === 'Slush Rush') {
-        spd = Math.floor(spd * 2);
-      }
-      const isTailwind = isPlayer ? Boolean(activeField.tailwindTeam1 && activeField.tailwindTeam1 > 0) : Boolean(activeField.tailwindTeam2 && activeField.tailwindTeam2 > 0);
-      if (isTailwind) {
-        spd = Math.floor(spd * 2);
-      }
-      return spd;
-    };
-
-    // Combine actions and sort by priority & speed
-    const allActions: { action: BattleAction; isMyAction: boolean; speed: number; priority: number; randomTiebreaker: number }[] = [];
-
-    myActs.forEach((act) => {
-      const actualSlotIdx = alivePlayerActiveIndices[act.actorIndex] ?? hostActiveSlots[act.actorIndex];
-      const actorPkmn = nextMyTeam[actualSlotIdx];
-      const move = act.moveId ? MOVES_DATABASE[act.moveId] : null;
-      let priority = move ? move.priority || 0 : 0;
-      if (move && move.id === 'grassy_glide' && activeField.terrain === 'Grassy' && actorPkmn && isGrounded(actorPkmn)) {
-        priority = 1;
-      }
-      allActions.push({
-        action: act,
-        isMyAction: true,
-        speed: getEffectiveSpeed(actorPkmn, true, act),
-        priority,
-        randomTiebreaker: Math.random()
-      });
-    });
-
-    oppActs.forEach((act) => {
-      const actualSlotIdx = aliveOppActiveIndices[act.actorIndex] ?? guestActiveSlots[act.actorIndex];
-      const actorPkmn = nextOppTeam[actualSlotIdx];
-      const move = act.moveId ? MOVES_DATABASE[act.moveId] : null;
-      let priority = move ? move.priority || 0 : 0;
-      if (move && move.id === 'grassy_glide' && activeField.terrain === 'Grassy' && actorPkmn && isGrounded(actorPkmn)) {
-        priority = 1;
-      }
-      allActions.push({
-        action: act,
-        isMyAction: false,
-        speed: getEffectiveSpeed(actorPkmn, false, act),
-        priority,
-        randomTiebreaker: Math.random()
-      });
-    });
-
-    // Sort by priority desc, then speed desc (or asc in Trick Room), then random tiebreaker
-    allActions.sort((a, b) => {
-      if (b.priority !== a.priority) return b.priority - a.priority;
-      
-      let speedDiff = b.speed - a.speed;
-      if (activeField.trickRoom && activeField.trickRoom > 0) {
-        speedDiff = a.speed - b.speed;
-      }
-      
-      if (speedDiff === 0) {
-        return b.randomTiebreaker - a.randomTiebreaker;
-      }
-      return speedDiff;
-    });
-
-    // Execute actions sequentially
-    allActions.forEach(({ action, isMyAction }) => {
-      const attackerTeam = isMyAction ? nextMyTeam : nextOppTeam;
-      const defenderTeam = isMyAction ? nextOppTeam : nextMyTeam;
-      const attackerActiveIndices = isMyAction ? hostActiveSlots : guestActiveSlots;
-      const defenderActiveIndices = isMyAction ? guestActiveSlots : hostActiveSlots;
-
-      const attackerSlotIndex = attackerActiveIndices[action.actorIndex];
-      const attacker = attackerTeam[attackerSlotIndex];
-
-      if (!attacker || attacker.isFainted || attacker.currentHp <= 0) return;
-
-      // Execute Mega Evolution before move if requested
-      if (action.megaEvolve && !attacker.isMegaEvolved && attacker.species.megaForm) {
-        const megaForms = Array.isArray(attacker.species.megaForm) ? attacker.species.megaForm : [attacker.species.megaForm];
-        const matchingMega = megaForms.find((mf) => mf.megaStoneId === attacker.item);
-        if (matchingMega) {
-          attacker.isMegaEvolved = true;
-          attacker.nickname = matchingMega.megaName;
-          attacker.ability = matchingMega.megaAbility;
-          attacker.species = {
-            ...attacker.species,
-            types: matchingMega.megaTypes || attacker.species.types
-          };
-          if (matchingMega.megaSpriteUrl) {
-            attacker.activeSpriteUrl = matchingMega.megaSpriteUrl;
-          }
-          
-          const megaSpecies = { ...attacker.species, baseStats: matchingMega.megaBaseStats };
-          const dummyCustom = {
-            id: attacker.instanceId,
-            speciesId: attacker.species.id,
-            nickname: attacker.nickname,
-            level: attacker.level,
-            item: attacker.item,
-            ability: matchingMega.megaAbility,
-            nature: attacker.originalNature || 'Hardy',
-            evs: attacker.originalEvs || { hp: 0, attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0 },
-            moves: []
-          };
-          attacker.maxStats = calculateAllStats(dummyCustom, megaSpecies);
-          pushLog(`✨ ${attacker.nickname} Mega Evolved! Ability became ${matchingMega.megaAbility}!`);
-        }
-      }
-
-      // Handle Flinching
-      if (attacker.isFlinched) {
-        attacker.isFlinched = false;
-        pushLog(`😵 ${attacker.nickname} flinched and couldn't move!`);
-        return;
-      }
-
-      // Handle Recharge turn requirement
-      if (attacker.mustRecharge) {
-        attacker.mustRecharge = false;
-        pushLog(`${attacker.nickname} must recharge and cannot move!`);
-        return;
-      }
-
-      if (action.type === 'MOVE' && action.moveId) {
-        const move = MOVES_DATABASE[action.moveId];
-        if (!move) return;
-
-        // Decrement move PP properly!
-        const moveEntry = attacker.moves.find((m) => m.move.id === move.id);
-        if (moveEntry && moveEntry.currentPp > 0) {
-          moveEntry.currentPp -= 1;
-        }
-
-        // Reset Glaive Rush vulnerability on attacker's turn
-        attacker.isGlaiveRushVulnerable = false;
-
-        // First Impression & Fake Out: Fail if not used on the first turn out on the field
-        if ((move.id === 'first_impression' || move.id === 'fake_out') && (attacker.turnsOnField || 1) > 1) {
-          pushLog(`${attacker.nickname} used ${move.name}... but it failed!`);
-          return;
-        }
-
-        // Handle Weather-setting moves (Sunny Day, Rain Dance, Sandstorm, Snowscape)
-        if (move.weatherEffect) {
-          activeField = { ...activeField, weather: move.weatherEffect, weatherTurns: 5 };
-          const weatherText: Record<string, string> = {
-            Sun: '☀️ The sunlight turned harsh!',
-            Rain: '🌧️ Heavy rain began to fall!',
-            Sandstorm: '⏳ A sandstorm kicked up!',
-            Snow: '🌨️ It began to snow!'
-          };
-          pushLog(weatherText[move.weatherEffect] || `The weather changed to ${move.weatherEffect}!`);
-        }
-
-        // Handle Terrain-setting moves (Grassy Terrain, Psychic Terrain, Electric Terrain, Misty Terrain)
-        if (move.terrainEffect) {
-          activeField = { ...activeField, terrain: move.terrainEffect, terrainTurns: 5 };
-          const terrainText: Record<string, string> = {
-            Grassy: '🌿 An emerald turf spread across the battlefield!',
-            Psychic: '🔮 The battlefield got weird and mysterious!',
-            Electric: '⚡ An electric current ran across the battlefield!',
-            Misty: '🌫️ Mist swirled around the battlefield!'
-          };
-          pushLog(terrainText[move.terrainEffect] || `The terrain became ${move.terrainEffect}!`);
-        }
-
-        // Handle Charging turn requirement (1-turn instant in matching weather: Solar Beam in Sun, Electro Shot in Rain)
-        if (move.requiresCharge && !attacker.isChargingMove) {
-          const isInstantWeather =
-            (move.id === 'solar_beam' && (activeField.weather === 'Sun' || attacker.ability === 'Drought')) ||
-            (move.id === 'electro_shot' && (activeField.weather === 'Rain' || attacker.ability === 'Drizzle'));
-
-          if (!isInstantWeather) {
-            attacker.isChargingMove = true;
-            pushLog(`⚡ ${attacker.nickname} is absorbing energy for ${move.name}!`);
-            return;
-          } else {
-            const weatherName = move.id === 'solar_beam' ? 'harsh sunlight' : 'heavy rain';
-            pushLog(`✨ ${attacker.nickname} absorbed energy for ${move.name} instantly in the ${weatherName}!`);
-          }
-        }
-        if (attacker.isChargingMove) {
-          attacker.isChargingMove = false;
-        }
-
-        // Set Recharge for next turn if move requires it (e.g. Hyper Beam)
-        if (move.requiresRecharge) {
-          attacker.mustRecharge = true;
-        }
-
-        // Glaive Rush: User takes 2x double damage until its next move
-        if (move.id === 'glaive_rush') {
-          attacker.isGlaiveRushVulnerable = true;
-          pushLog(`⚠️ ${attacker.nickname} used Glaive Rush and is vulnerable to double damage!`);
-        } else {
-          pushLog(`${attacker.nickname} used ${move.name}!`);
-        }
-
-        // Double Shock: User loses Electric typing until switched out
-        if (move.id === 'double_shock') {
-          const currentTypes = attacker.activeTypes || attacker.species.types;
-          if (currentTypes.includes('Electric')) {
-            attacker.activeTypes = currentTypes.filter((t) => t !== 'Electric');
-            pushLog(`⚡ ${attacker.nickname} used up all its electricity and lost its Electric typing!`);
-          }
-        }
-
-        // Aurora Veil: Usable only in Snow, blocks 1/3 physical and special damage taken
-        if (move.id === 'aurora_veil') {
-          if (activeField.weather !== 'Snow') {
-            pushLog(`${attacker.nickname} used Aurora Veil... but it failed! (Aurora Veil can only be used during Snow)`);
-            return;
-          }
-          const veilTurns = attacker.item === 'light_clay' ? 8 : 5;
-          if (isMyAction) {
-            activeField = { ...activeField, auroraVeilTeam1: veilTurns };
-          } else {
-            activeField = { ...activeField, auroraVeilTeam2: veilTurns };
-          }
-          pushLog(`❄️ ${attacker.nickname} set up an Aurora Veil! (Blocks 1/3 of physical & special damage for ${veilTurns} turns)`);
-          return;
-        }
-
-        const checkMoveHit = (m: typeof move, _atk: typeof attacker, def: typeof attacker): boolean => {
-          if (def.isGlaiveRushVulnerable) return true; // All moves hit during Glaive Rush vulnerability
-          if (activeField.weather === 'Rain' && (m.id === 'thunder' || m.id === 'hurricane')) return true;
-          if (activeField.weather === 'Sun' && (m.id === 'thunder' || m.id === 'hurricane')) {
-            return Math.random() * 100 <= 50; // Accuracy drops to 50% in Sun
-          }
-          if (m.accuracy === null || m.accuracy === undefined || m.accuracy === 0) return true;
-          return Math.random() * 100 <= m.accuracy;
-        };
-
-        const isDefAuroraActive = isMyAction
-          ? Boolean(activeField.auroraVeilTeam2 && activeField.auroraVeilTeam2 > 0)
-          : Boolean(activeField.auroraVeilTeam1 && activeField.auroraVeilTeam1 > 0);
-
-        let moveEffectivePriority = move.priority || 0;
-        if (move.id === 'grassy_glide' && activeField.terrain === 'Grassy' && isGrounded(attacker)) {
-          moveEffectivePriority = 1;
-        }
-
-        const applyMoveSecondaryEffects = (m: typeof move, atk: typeof attacker, def: typeof attacker, damageDealt: number) => {
-          // 1. Flinch (e.g. Fake Out, Icicle Crash, Rock Slide, Iron Head, Headbutt)
-          if (m.flinchChance && Math.random() * 100 < m.flinchChance) {
-            if (def.ability !== 'Inner Focus') {
-              def.isFlinched = true;
-              pushLog(`💫 ${def.nickname} flinched!`);
-            }
-          }
-
-          // 2. Status Effects (Burn, Paralysis, Sleep, Poison, Freeze)
-          if (m.statusEffect && !def.status && !def.isFainted) {
-            if (activeField.terrain === 'Electric' && m.statusEffect === 'Sleep' && isGrounded(def)) {
-              pushLog(`⚡ Electric Terrain prevented ${def.nickname} from falling asleep!`);
-              return;
-            }
-            if (activeField.terrain === 'Misty' && isGrounded(def)) {
-              pushLog(`🌫️ Misty Terrain protected ${def.nickname} from status conditions!`);
-              return;
-            }
-
-            const chance = m.statusChance ?? 100;
-            if (Math.random() * 100 < chance) {
-              def.status = m.statusEffect;
-              const statusEmoji: Record<string, string> = {
-                Burn: '🔥',
-                Paralysis: '⚡',
-                Sleep: '😴',
-                Poison: '☠️',
-                Freeze: '❄️'
-              };
-              pushLog(`${statusEmoji[m.statusEffect] || '✨'} ${def.nickname} was afflicted with ${m.statusEffect}!`);
-            }
-          }
-
-          // 3. HP Drain (e.g. Bitter Blade, Giga Drain, Drain Punch, Leech Life, Matcha Gotcha)
-          if (m.drainPercent && damageDealt > 0 && !atk.isFainted && atk.currentHp < atk.maxStats.hp) {
-            const drained = Math.max(1, Math.floor((damageDealt * m.drainPercent) / 100));
-            atk.currentHp = Math.min(atk.maxStats.hp, atk.currentHp + drained);
-            pushLog(`💚 ${atk.nickname} drained ${drained} HP!`);
-          }
-
-          // 4. Stat Changes (e.g. Trop Kick, Snarl, Icy Wind, Moonblast, Shadow Ball, Close Combat, Make It Rain, Armor Cannon)
-          if (m.statChanges && m.statChanges.length > 0) {
-            m.statChanges.forEach((sc) => {
-              const chance = sc.chance ?? 100;
-              if (Math.random() * 100 <= chance) {
-                const targetPkmn = (sc.target === 'Self' || (sc.stages < 0 && sc.target !== 'Target')) ? atk : def;
-                if (targetPkmn && !targetPkmn.isFainted && targetPkmn.statStages) {
-                  const statKey = sc.stat as keyof typeof targetPkmn.statStages;
-                  if (statKey in targetPkmn.statStages) {
-                    const currentStage = targetPkmn.statStages[statKey] || 0;
-                    const newStage = Math.max(-6, Math.min(6, currentStage + sc.stages));
-                    targetPkmn.statStages[statKey] = newStage;
-                    const direction = sc.stages > 0 ? 'rose' : 'fell';
-                    const amountText = Math.abs(sc.stages) > 1 ? ` sharply!` : '!';
-                    const statNameFormatted = statKey === 'spAtk' ? 'Sp. Atk' : statKey === 'spDef' ? 'Sp. Def' : statKey.charAt(0).toUpperCase() + statKey.slice(1);
-                    pushLog(`${targetPkmn.nickname}'s ${statNameFormatted} ${direction}${amountText}`);
-                  }
-                }
-              }
-            });
-          }
-        };
-
-        if (move.target === 'SpreadEnemies') {
-          // Hits all active defender slots in 2v2
-          defenderActiveIndices.forEach((defSlotIdx) => {
-            const defender = defenderTeam[defSlotIdx];
-            if (defender && !defender.isFainted) {
-              // Psychic Terrain blocks priority attacks against grounded targets
-              if (activeField.terrain === 'Psychic' && moveEffectivePriority > 0 && isGrounded(defender)) {
-                pushLog(`🔮 Psychic Terrain protected ${defender.nickname} from ${attacker.nickname}'s ${move.name}!`);
-                return;
-              }
-              if (!checkMoveHit(move, attacker, defender)) {
-                pushLog(`${attacker.nickname}'s attack missed ${defender.nickname}!`);
-                return;
-              }
-              defender.timesHit = (defender.timesHit || 0) + 1;
-              const res = calculateDamage(attacker, defender, move, format, false, attackerTeam, isDefAuroraActive, activeField);
-              defender.currentHp = Math.max(0, defender.currentHp - res.damage);
-              if (res.description) pushLog(res.description);
-              pushLog(`${defender.nickname} took ${res.damage} damage!`);
-
-              applyMoveSecondaryEffects(move, attacker, defender, res.damage);
-
-              if (defender.currentHp <= 0) {
-                defender.isFainted = true;
-                pushLog(`${defender.nickname} fainted!`);
-              }
-
-              // Recoil damage calculation
-              if (move.recoilPercent && res.damage > 0 && !attacker.isFainted) {
-                const recoilDamage = Math.max(1, Math.floor((res.damage * move.recoilPercent) / 100));
-                attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage);
-                pushLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
-                if (attacker.currentHp <= 0) {
-                  attacker.isFainted = true;
-                  pushLog(`${attacker.nickname} fainted from recoil!`);
-                }
-              }
-
-              // Spicy Spray ability (burns attacker when hit)
-              if (defender.ability === 'Spicy Spray' && res.damage > 0 && !attacker.isFainted && !attacker.status) {
-                attacker.status = 'Burn';
-                pushLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
-              }
-            }
-          });
-        } else {
-          // Single target attack
-          const targetSlot = action.targetSlot || 0;
-          let targetSlotIdx = defenderActiveIndices[targetSlot] ?? defenderActiveIndices[0];
-          let defender = defenderTeam[targetSlotIdx];
-
-          // Mid-turn retargeting: if targeted enemy fainted mid-turn, redirect to remaining alive defender
-          if ((!defender || defender.isFainted || defender.currentHp <= 0) && format === 'Doubles') {
-            const alternateSlotIdx = defenderActiveIndices.find(
-              (idx) => idx !== targetSlotIdx && defenderTeam[idx] && !defenderTeam[idx].isFainted && defenderTeam[idx].currentHp > 0
-            );
-            if (alternateSlotIdx !== undefined) {
-              targetSlotIdx = alternateSlotIdx;
-              defender = defenderTeam[targetSlotIdx];
-              pushLog(`${attacker.nickname}'s attack redirected to ${defender.nickname}!`);
-            }
-          }
-
-          if (defender && !defender.isFainted && defender.currentHp > 0) {
-            // Psychic Terrain blocks priority attacks against grounded targets
-            if (activeField.terrain === 'Psychic' && moveEffectivePriority > 0 && isGrounded(defender)) {
-              pushLog(`🔮 Psychic Terrain protected ${defender.nickname} from ${attacker.nickname}'s ${move.name}!`);
-              return;
-            }
-
-            if (!checkMoveHit(move, attacker, defender)) {
-              pushLog(`${attacker.nickname}'s attack missed ${defender.nickname}!`);
-              return;
-            }
-
-            defender.timesHit = (defender.timesHit || 0) + 1;
-            const res = calculateDamage(attacker, defender, move, format, false, attackerTeam, isDefAuroraActive, activeField);
-            defender.currentHp = Math.max(0, defender.currentHp - res.damage);
-            if (res.description) pushLog(res.description);
-            pushLog(`${defender.nickname} took ${res.damage} damage!`);
-
-            applyMoveSecondaryEffects(move, attacker, defender, res.damage);
-
-            if (defender.currentHp <= 0) {
-              defender.isFainted = true;
-              pushLog(`${defender.nickname} fainted!`);
-            }
-
-            // Recoil damage calculation
-            if (move.recoilPercent && res.damage > 0 && !attacker.isFainted) {
-              const recoilDamage = Math.max(1, Math.floor((res.damage * move.recoilPercent) / 100));
-              attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage);
-              pushLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
-              if (attacker.currentHp <= 0) {
-                attacker.isFainted = true;
-                pushLog(`${attacker.nickname} fainted from recoil!`);
-              }
-            }
-
-            // Spicy Spray ability (burns attacker when hit)
-            if (defender.ability === 'Spicy Spray' && res.damage > 0 && !attacker.isFainted && !attacker.status) {
-              attacker.status = 'Burn';
-              pushLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
-            }
-          }
-        }
-      }
-    });
-
-    // Increment turns on field for active Pokemon
-    hostActiveSlots.forEach((idx) => {
-      if (nextMyTeam[idx] && !nextMyTeam[idx].isFainted) {
-        nextMyTeam[idx].turnsOnField = (nextMyTeam[idx].turnsOnField || 1) + 1;
-      }
-    });
-    guestActiveSlots.forEach((idx) => {
-      if (nextOppTeam[idx] && !nextOppTeam[idx].isFainted) {
-        nextOppTeam[idx].turnsOnField = (nextOppTeam[idx].turnsOnField || 1) + 1;
-      }
-    });
-
-    // End-of-Turn Weather & Terrain Effects
-    // 1. Grassy Terrain HP recovery (1/16 max HP to alive grounded active Pokemon)
-    if (activeField.terrain === 'Grassy') {
-      [...hostActiveSlots.map((i) => nextMyTeam[i]), ...guestActiveSlots.map((i) => nextOppTeam[i])].forEach((pkmn) => {
-        if (pkmn && !pkmn.isFainted && pkmn.currentHp > 0 && pkmn.currentHp < pkmn.maxStats.hp && isGrounded(pkmn)) {
-          const healAmount = Math.max(1, Math.floor(pkmn.maxStats.hp / 16));
-          pkmn.currentHp = Math.min(pkmn.maxStats.hp, pkmn.currentHp + healAmount);
-          pushLog(`🌿 Grassy Terrain restored HP to ${pkmn.nickname}! (+${healAmount} HP)`);
-        }
-      });
-    }
-
-    // 2. Sandstorm chip damage (1/16 max HP to non-Rock/Steel/Ground active Pokemon)
-    if (activeField.weather === 'Sandstorm') {
-      [...hostActiveSlots.map((i) => nextMyTeam[i]), ...guestActiveSlots.map((i) => nextOppTeam[i])].forEach((pkmn) => {
-        if (pkmn && !pkmn.isFainted && pkmn.currentHp > 0) {
-          const types = pkmn.activeTypes || pkmn.species.types;
-          const isImmune =
-            types.includes('Rock') ||
-            types.includes('Ground') ||
-            types.includes('Steel') ||
-            pkmn.ability === 'Sand Force' ||
-            pkmn.ability === 'Sand Rush' ||
-            pkmn.ability === 'Sand Veil';
-          if (!isImmune) {
-            const chip = Math.max(1, Math.floor(pkmn.maxStats.hp / 16));
-            pkmn.currentHp = Math.max(0, pkmn.currentHp - chip);
-            pushLog(`⏳ ${pkmn.nickname} is buffeted by the sandstorm! (-${chip} HP)`);
-            if (pkmn.currentHp <= 0) {
-              pkmn.isFainted = true;
-              pushLog(`${pkmn.nickname} fainted from the sandstorm!`);
-            }
-          }
-        }
-      });
-    }
-
-    // 3. Weather & Terrain duration countdown
-    if (activeField.weather && activeField.weather !== 'Clear') {
-      activeField.weatherTurns = (activeField.weatherTurns || 5) - 1;
-      if (activeField.weatherTurns <= 0) {
-        pushLog(`☀️ The ${activeField.weather.toLowerCase()} cleared up!`);
-        activeField.weather = 'Clear';
-      }
-    }
-    if (activeField.terrain && activeField.terrain !== 'None') {
-      activeField.terrainTurns = (activeField.terrainTurns || 5) - 1;
-      if (activeField.terrainTurns <= 0) {
-        pushLog(`✨ The ${activeField.terrain.toLowerCase()} terrain faded away!`);
-        activeField.terrain = 'None';
-      }
-    }
-    if (activeField.auroraVeilTeam1 && activeField.auroraVeilTeam1 > 0) {
-      activeField.auroraVeilTeam1 -= 1;
-      if (activeField.auroraVeilTeam1 <= 0) pushLog(`Host's Aurora Veil wore off!`);
-    }
-    if (activeField.auroraVeilTeam2 && activeField.auroraVeilTeam2 > 0) {
-      activeField.auroraVeilTeam2 -= 1;
-      if (activeField.auroraVeilTeam2 <= 0) pushLog(`Opposing Aurora Veil wore off!`);
-    }
-
-    // 4. Process Guest / Opponent replacements
-    let updatedOppActive = [...guestActiveSlots];
-    guestActiveSlots.forEach((oppIdx, slotNum) => {
-      const oppMon = nextOppTeam[oppIdx];
-      if (oppMon && (oppMon.isFainted || oppMon.currentHp <= 0)) {
-        const availableBenchIdx = nextOppTeam.findIndex(
-          (p, i) => !updatedOppActive.includes(i) && !p.isFainted && p.currentHp > 0
-        );
-        if (availableBenchIdx !== -1) {
-          updatedOppActive[slotNum] = availableBenchIdx;
-          nextOppTeam[availableBenchIdx].turnsOnField = 1;
-          pushLog(`⚡ Opponent sent out ${nextOppTeam[availableBenchIdx].nickname}!`);
-          activeField = checkEntranceAbilities(nextOppTeam[availableBenchIdx], activeField, pushLog);
-        }
-      }
-    });
-
-    // 5. Process Host / Player replacements
-    let updatedMyActive = [...hostActiveSlots];
-    hostActiveSlots.forEach((myIdx, slotNum) => {
-      const myMon = nextMyTeam[myIdx];
-      if (myMon && (myMon.isFainted || myMon.currentHp <= 0)) {
-        const availableBenchIdx = nextMyTeam.findIndex(
-          (p, i) => !updatedMyActive.includes(i) && !p.isFainted && p.currentHp > 0
-        );
-        if (availableBenchIdx !== -1) {
-          updatedMyActive[slotNum] = availableBenchIdx;
-          nextMyTeam[availableBenchIdx].turnsOnField = 1;
-          pushLog(`⚡ Go, ${nextMyTeam[availableBenchIdx].nickname}!`);
-          activeField = checkEntranceAbilities(nextMyTeam[availableBenchIdx], activeField, pushLog);
-        }
-      }
-    });
-
-    // 6. Check Win / Loss condition immediately
-    let turnWinner: string | null = null;
-    const myAllFainted = nextMyTeam.every((p) => p.isFainted || p.currentHp <= 0);
-    const oppAllFainted = nextOppTeam.every((p) => p.isFainted || p.currentHp <= 0);
-
-    if (myAllFainted && oppAllFainted) {
-      turnWinner = 'Draw';
-      pushLog('The battle ended in a Draw!');
-    } else if (oppAllFainted) {
-      turnWinner = 'Player';
-      pushLog('You won the Pokémon Champion battle!');
-    } else if (myAllFainted) {
-      turnWinner = 'Opponent';
-      pushLog('Opponent won the battle!');
-    } else {
-      pushLog('Turn finished! Choose your next moves.');
-    }
-
-    return {
-      nextHostTeam: nextMyTeam,
-      nextGuestTeam: nextOppTeam,
-      activeField,
-      turnLogs,
-      winner: turnWinner,
-      nextHostActive: updatedMyActive,
-      nextGuestActive: updatedOppActive
-    };
-  };
 
   const executeAuthoritativeTurn = (hostActs: BattleAction[], guestActs: BattleAction[]) => {
     setIsTurnProcessing(true);
@@ -1145,575 +591,103 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   };
 
 
-  if (isSelectingTeam) {
+
+  
+  if (phase === 'PREVIEW') {
     const fullTeam = playerTeam.length > 0 ? playerTeam : generateRandomCpuTeam();
-
     return (
-      <div className="animate-in" style={{ padding: '2rem', height: '100%', overflowY: 'auto' }}>
-        <div className="glass-panel" style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', marginBottom: '1.5rem' }}>
-          <button className="btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }} onClick={onExit}>
-            <ArrowLeft size={16} /> Exit to Lobby
-          </button>
-          <div style={{ textAlign: 'center' }}>
-            <h2 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', margin: 0 }}>
-              <Shield size={22} color="var(--primary)" /> Team Preview: Select {requiredPicks} of 6
-            </h2>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0.25rem 0 0 0' }}>
-              Format: <span style={{ color: 'var(--primary)', fontWeight: 800 }}>{format}</span> ({format === 'Singles' ? '1 Lead, 2 Bench' : '2 Leads, 2 Bench'})
-            </p>
-          </div>
-          <button
-            className="btn-primary"
-            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam) ? 0.5 : 1, cursor: (selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam) ? 'not-allowed' : 'pointer' }}
-            disabled={selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam}
-            onClick={handleConfirmTeamSelection}
-          >
-            <Sparkles size={16} /> Confirm & Enter ({selectedPickIds.length} / {requiredPicks})
-          </button>
-        </div>
-
-        {isWaitingForOpponentTeam && (
-          <div className="glass-panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', textAlign: 'center', borderColor: 'var(--accent-cyan)', backgroundColor: 'rgba(6, 182, 212, 0.08)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem' }}>
-              <div style={{ width: '18px', height: '18px', border: '2px solid var(--accent-cyan)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--accent-cyan)' }}>
-                Team confirmed! Waiting for opponent to select their team...
-              </span>
-            </div>
-          </div>
-        )}
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
-          {fullTeam.map((pkmn) => {
-            const spec = POKEMON_ROSTER.find((s) => s.id === pkmn.speciesId);
-            const pickIndex = selectedPickIds.indexOf(pkmn.id);
-            const isPicked = pickIndex !== -1;
-
-            let slotLabel = '';
-            if (isPicked) {
-              if (format === 'Singles') {
-                slotLabel = pickIndex === 0 ? 'Lead #1' : `Bench #${pickIndex}`;
-              } else {
-                slotLabel = pickIndex < 2 ? `Lead #${pickIndex + 1}` : `Bench #${pickIndex - 1}`;
-              }
-            }
-
-            return (
-              <div
-                key={pkmn.id}
-                className="glass-card"
-                style={{
-                  position: 'relative',
-                  cursor: 'pointer',
-                  padding: '1rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  border: isPicked ? '2px solid var(--primary)' : '1px solid var(--border-glass)',
-                  backgroundColor: isPicked ? 'rgba(99, 102, 241, 0.15)' : 'rgba(0, 0, 0, 0.4)',
-                  boxShadow: isPicked ? '0 0 15px rgba(99, 102, 241, 0.3)' : 'none',
-                  transform: isPicked ? 'scale(1.02)' : 'scale(1)',
-                  transition: 'var(--transition)'
-                }}
-                onClick={() => handleTogglePick(pkmn.id)}
-              >
-                {/* Big Selection Number Badge */}
-                {isPicked && (
-                  <div style={{
-                    position: 'absolute',
-                    top: '-12px',
-                    right: '-12px',
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '50%',
-                    backgroundColor: 'var(--primary)',
-                    color: '#fff',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontWeight: 900,
-                    fontSize: '1.1rem',
-                    boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
-                    border: '2px solid #0f111a',
-                    zIndex: 10
-                  }}>
-                    {pickIndex + 1}
-                  </div>
-                )}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <img src={spec?.spriteUrl} alt={spec?.name} style={{ width: '56px', height: '56px', objectFit: 'contain', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))' }} />
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <h4 style={{ fontWeight: 800, fontSize: '1rem', color: isPicked ? '#fff' : 'var(--text)', margin: 0 }}>{pkmn.nickname || spec?.name}</h4>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Lv. {pkmn.level || 50}</span>
-                      <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.25rem' }}>
-                        {spec?.types.map((t) => (
-                          <span key={t} className={`type-tag type-${t.toLowerCase()}`} style={{ fontSize: '0.55rem', padding: '0.1rem 0.4rem', borderRadius: '1rem', textTransform: 'uppercase', fontWeight: 800 }}>
-                            {t}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                  {isPicked && (
-                    <span style={{ backgroundColor: 'var(--primary)', color: '#fff', fontWeight: 800, fontSize: '0.65rem', padding: '0.2rem 0.6rem', borderRadius: '1rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                      {slotLabel}
-                    </span>
-                  )}
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-glass)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  <div><span style={{ color: 'var(--text)', fontWeight: 600 }}>Item:</span> {HELD_ITEMS.find((i) => i.id === pkmn.item)?.name || 'None'}</div>
-                  <div><span style={{ color: 'var(--text)', fontWeight: 600 }}>Ability:</span> {pkmn.ability}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      <TeamPreview
+        format={format}
+        playerTeam={fullTeam}
+        requiredPicks={requiredPicks}
+        selectedPickIds={selectedPickIds}
+        isWaitingForOpponentTeam={isWaitingForOpponentTeam}
+        onTogglePick={handleTogglePick}
+        onConfirm={handleConfirmTeamSelection}
+        onExit={onExit}
+      />
     );
   }
 
+  if (phase === 'INTRO') {
+    const myLeads = myActiveIndices.map(i => myTeamState[i]).filter(Boolean);
+    const oppLeads = oppActiveIndices.map(i => opponentTeamState[i]).filter(Boolean);
+    return (
+      <MatchIntro
+        myLeads={myLeads}
+        oppLeads={oppLeads}
+        isHost={isHost}
+        opponentName={opponentName}
+        format={format}
+      />
+    );
+  }
+
+  if (winner) {
+    return <ResultScreen winner={winner} onExit={onExit} />;
+  }
+
   return (
-    <div className="battle-container w-full max-w-full space-y-4">
-      {/* Top Bar Header */}
-      <div className="battle-topbar flex justify-between items-center bg-slate-900/60 p-3 rounded-2xl border border-glass">
-        <button className="btn-secondary text-xs px-3 py-1.5 flex items-center gap-1.5 text-slate-300 hover:text-white" onClick={onExit}>
-          <ArrowLeft size={16} /> Exit / Back to Lobby
-        </button>
-        <div className="battle-title font-bold text-base flex items-center gap-2 flex-wrap justify-end">
-          <span>Pokémon Champions ({format})</span>
-          <span className="room-badge">{roomId}</span>
-          <button
-            className="btn-secondary text-xs px-2.5 py-1 flex items-center gap-1 font-bold text-sky-400 border-sky-500/40 hover:bg-sky-950/40"
-            onClick={() => setShowBattleCalc(true)}
-            title="Open Battle Damage Calculator"
-          >
-            <Calculator size={13} /> Calc
-          </button>
-        </div>
-      </div>
+    <>
+      <BattleView
+        format={format}
+        roomId={roomId}
+        myTeamState={myTeamState}
+        opponentTeamState={opponentTeamState}
+        myActiveIndices={myActiveIndices}
+        oppActiveIndices={oppActiveIndices}
+        fieldConditions={fieldConditions}
+        battleLog={battleLog}
+        activeLogMessage={activeLogMessage}
+        selectedActorIndex={selectedActorIndex}
+        pendingActions={pendingActions}
+        targetModalMove={targetModalMove}
+        isTurnProcessing={isTurnProcessing}
+        isWaitingForOpponentTurn={isWaitingForOpponentTurn}
+        winner={winner}
+        onSelectMove={handleSelectMove}
+        onSelectSwitch={handleSelectSwitch}
+        onTargetConfirm={handleTargetConfirm}
+        onUndoAction={handleUndoAction}
+        onToggleMega={() => setIsMegaChecked(!isMegaChecked)}
+        isMegaChecked={isMegaChecked}
+        onExit={onExit}
+        onShowCalc={() => setShowBattleCalc(true)}
+        onCancelTarget={() => setTargetModalMove(null)}
+      />
 
-
-      {/* 2.5D Battle Arena View */}
-      <div className="battle-field-arena w-full relative">
-        <div className="arena-stadium-lights" />
-
-        {/* Weather & Terrain Corner Badges */}
-        <div className="absolute top-4 right-4 z-40 flex flex-col gap-2 items-end">
-          {/* Weather Badge */}
-          {fieldConditions.weather && fieldConditions.weather !== 'Clear' && (
-            <div
-              className="animate-in fade-in slide-in-from-right-4"
-              style={{
-                backgroundColor:
-                  fieldConditions.weather === 'Sun' ? 'rgba(239, 68, 68, 0.35)' :
-                  fieldConditions.weather === 'Rain' ? 'rgba(59, 130, 246, 0.35)' :
-                  fieldConditions.weather === 'Sandstorm' ? 'rgba(217, 119, 6, 0.35)' : 'rgba(148, 163, 184, 0.35)',
-                border: `1px solid ${
-                  fieldConditions.weather === 'Sun' ? '#ef4444' :
-                  fieldConditions.weather === 'Rain' ? '#3b82f6' :
-                  fieldConditions.weather === 'Sandstorm' ? '#d97706' : '#94a3b8'}`,
-                color: '#fff',
-                borderRadius: '0.75rem',
-                padding: '0.5rem 0.75rem',
-                fontSize: '0.85rem',
-                fontWeight: 800,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                backdropFilter: 'blur(8px)',
-                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)'
-              }}
-            >
-              {fieldConditions.weather === 'Sun' ? '☀️ Harsh Sun' :
-               fieldConditions.weather === 'Rain' ? '🌧️ Heavy Rain' :
-               fieldConditions.weather === 'Sandstorm' ? '⏳ Sandstorm' : '🌨️ Snow'} 
-              <span className="opacity-80 font-semibold">({fieldConditions.weatherTurns || 5}t)</span>
-            </div>
-          )}
-
-          {/* Terrain Badge */}
-          {fieldConditions.terrain && fieldConditions.terrain !== 'None' && (
-            <div
-              className="animate-in fade-in slide-in-from-right-4"
-              style={{
-                backgroundColor:
-                  fieldConditions.terrain === 'Electric' ? 'rgba(234, 179, 8, 0.35)' :
-                  fieldConditions.terrain === 'Grassy' ? 'rgba(34, 197, 94, 0.35)' :
-                  fieldConditions.terrain === 'Psychic' ? 'rgba(168, 85, 247, 0.35)' : 'rgba(236, 72, 153, 0.35)',
-                border: `1px solid ${
-                  fieldConditions.terrain === 'Electric' ? '#eab308' :
-                  fieldConditions.terrain === 'Grassy' ? '#22c55e' :
-                  fieldConditions.terrain === 'Psychic' ? '#a855f7' : '#ec4899'}`,
-                color: '#fff',
-                borderRadius: '0.75rem',
-                padding: '0.5rem 0.75rem',
-                fontSize: '0.85rem',
-                fontWeight: 800,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                backdropFilter: 'blur(8px)',
-                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)'
-              }}
-            >
-              {fieldConditions.terrain === 'Electric' ? '⚡ Electric Terrain' :
-               fieldConditions.terrain === 'Grassy' ? '🌿 Grassy Terrain' :
-               fieldConditions.terrain === 'Psychic' ? '🔮 Psychic Terrain' : '🌫️ Misty Terrain'}
-              <span className="opacity-80 font-semibold">({fieldConditions.terrainTurns || 5}t)</span>
-            </div>
-          )}
-        </div>
-
-        {/* Floating Active Log Banner (Top) */}
-        {activeLogMessage && (
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 w-4/5 max-w-2xl bg-slate-900/90 backdrop-blur-md border border-indigo-500/50 rounded-xl p-4 shadow-2xl text-center transform transition-all duration-300 animate-in fade-in slide-in-from-top-4">
-            <h2 className="text-xl font-black text-white tracking-wide">{activeLogMessage}</h2>
-          </div>
-        )}
-
-        {/* Opponent Active Side (Top) */}
-        <div className="active-side opponent-side">
-          {oppActiveIndices.map((idx) => {
-            const pkmn = opponentTeamState[idx];
-            if (!pkmn) return null;
-            const hpPct = Math.round((pkmn.currentHp / pkmn.maxStats.hp) * 100);
-
-            return (
-              <div key={pkmn.instanceId} className="pokemon-battle-card opp-card">
-                <div className="hp-bar-container">
-                  <div className="pkmn-meta">
-                    <span className="pkmn-name">{pkmn.nickname}</span>
-                    <span className="pkmn-lvl">Lv. {pkmn.level}</span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                    {pkmn.species.types.map((t) => (
-                      <span key={t} className={`type-tag type-${t.toLowerCase()}`} style={{ fontSize: '0.55rem', padding: '0.05rem 0.35rem' }}>
-                        {t}
-                      </span>
-                    ))}
-                    {pkmn.status && (
-                      <span className={`status-pill status-${pkmn.status.toLowerCase().slice(0, 3)}`}>
-                        {pkmn.status === 'Burn' ? '🔥 BRN' :
-                         pkmn.status === 'Paralysis' ? '⚡ PAR' :
-                         pkmn.status === 'Freeze' ? '❄️ FRZ' :
-                         pkmn.status === 'Sleep' ? '💤 SLP' :
-                         '☠️ PSN'}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="hp-bar-track">
-                    <div
-                      className={`hp-bar-fill ${
-                        hpPct < 20 ? 'critical' : hpPct < 50 ? 'warning' : 'healthy'
-                      }`}
-                      style={{ width: `${hpPct}%` }}
-                    />
-                  </div>
-                  <span className="hp-text">{pkmn.currentHp} / {pkmn.maxStats.hp} HP</span>
-
-                  {/* Stat Stage Chips */}
-                  {Object.entries(pkmn.statStages || {}).some(([, val]) => val !== 0) && (
-                    <div className="flex flex-wrap gap-1 mt-1.5 pt-1 border-t border-glass">
-                      {Object.entries(pkmn.statStages).map(([stat, val]) => {
-                        if (!val) return null;
-                        const isPos = val > 0;
-                        const label = stat === 'spAtk' ? 'SpA' : stat === 'spDef' ? 'SpD' : stat.slice(0, 3).toUpperCase();
-                        return (
-                          <span key={stat} className={`stat-stage-badge ${isPos ? 'positive' : 'negative'}`}>
-                            {isPos ? `▲ +${val}` : `▼ ${val}`} {label}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                <div className="pokemon-stage">
-                  <div className="battle-pedestal opponent-pedestal" />
-                  <img
-                    src={pkmn.activeSpriteUrl || pkmn.species.spriteUrl}
-                    alt={pkmn.nickname}
-                    className="battle-sprite"
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Player Active Side (Bottom) */}
-        <div className="active-side player-side">
-          {myActiveIndices.map((idx, slotNum) => {
-            const pkmn = myTeamState[idx];
-            if (!pkmn) return null;
-            const hpPct = Math.round((pkmn.currentHp / pkmn.maxStats.hp) * 100);
-            const isActor = slotNum === selectedActorIndex;
-
-            return (
-              <div
-                key={pkmn.instanceId}
-                className={`pokemon-battle-card my-card ${isActor ? 'selecting-actor' : ''}`}
-              >
-                <div className="pokemon-stage">
-                  <div className="battle-pedestal" />
-                  {isActor && <div className="active-indicator-pulse" />}
-                  <img
-                    src={pkmn.activeSpriteUrl || pkmn.species.spriteUrl}
-                    alt={pkmn.nickname}
-                    className="battle-sprite"
-                  />
-                </div>
-
-                <div className="hp-bar-container">
-                  <div className="pkmn-meta">
-                    <span className="pkmn-name">{pkmn.nickname}</span>
-                    <span className="pkmn-lvl">Lv. {pkmn.level}</span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                    {pkmn.species.types.map((t) => (
-                      <span key={t} className={`type-tag type-${t.toLowerCase()}`} style={{ fontSize: '0.55rem', padding: '0.05rem 0.35rem' }}>
-                        {t}
-                      </span>
-                    ))}
-                    {pkmn.status && (
-                      <span className={`status-pill status-${pkmn.status.toLowerCase().slice(0, 3)}`}>
-                        {pkmn.status === 'Burn' ? '🔥 BRN' :
-                         pkmn.status === 'Paralysis' ? '⚡ PAR' :
-                         pkmn.status === 'Freeze' ? '❄️ FRZ' :
-                         pkmn.status === 'Sleep' ? '💤 SLP' :
-                         '☠️ PSN'}
-                      </span>
-                    )}
-                    {isActor && (
-                      <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/30 text-indigo-300 border border-indigo-500/50 animate-pulse">
-                        Active
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="hp-bar-track">
-                    <div
-                      className={`hp-bar-fill ${
-                        hpPct < 20 ? 'critical' : hpPct < 50 ? 'warning' : 'healthy'
-                      }`}
-                      style={{ width: `${hpPct}%` }}
-                    />
-                  </div>
-                  <span className="hp-text">{pkmn.currentHp} / {pkmn.maxStats.hp} HP</span>
-
-                  {/* Stat Stage Chips */}
-                  {Object.entries(pkmn.statStages || {}).some(([, val]) => val !== 0) && (
-                    <div className="flex flex-wrap gap-1 mt-1.5 pt-1 border-t border-glass">
-                      {Object.entries(pkmn.statStages).map(([stat, val]) => {
-                        if (!val) return null;
-                        const isPos = val > 0;
-                        const label = stat === 'spAtk' ? 'SpA' : stat === 'spDef' ? 'SpD' : stat.slice(0, 3).toUpperCase();
-                        return (
-                          <span key={stat} className={`stat-stage-badge ${isPos ? 'positive' : 'negative'}`}>
-                            {isPos ? `▲ +${val}` : `▼ ${val}`} {label}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Control Deck & Battle Log */}
-      <div className="battle-bottom-deck grid grid-cols-3 gap-4">
-        {/* Moves & Actions Menu (2 Columns width) */}
-        <div className="moves-menu-panel col-span-2 space-y-3">
-          {currentActorPkmn && !winner && (
-            <div>
-              <div className="actor-header flex justify-between items-center mb-2">
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-base text-white">Action for: {currentActorPkmn.nickname}</h3>
-                  {(pendingActions.length > 0 || selectedActorIndex > 0) && (
-                    <button
-                      className="btn-secondary text-xs px-2.5 py-1 flex items-center gap-1.5 font-semibold text-amber-300 border-amber-500/50 hover:bg-amber-950/40"
-                      onClick={handleUndoAction}
-                      title="Undo previous slot action selection"
-                    >
-                      <ArrowLeft size={14} /> Back / Change Previous Action
-                    </button>
-                  )}
-                </div>
-
-                {getMatchingMegaForm(currentActorPkmn) && (
-                  <button
-                    className={`btn-secondary text-xs px-3 py-1 flex items-center gap-1 font-bold ${
-                      isMegaChecked ? 'bg-amber-500 text-black border-amber-400' : 'text-amber-400 border-amber-500/50'
-                    }`}
-                    onClick={() => setIsMegaChecked(!isMegaChecked)}
-                  >
-                    ⚡ {isMegaChecked ? 'Mega Evolution Active!' : `Mega Evolve (${getMatchingMegaForm(currentActorPkmn)?.megaName})`}
-                  </button>
-                )}
-              </div>
-
-              <div className="moves-buttons-grid grid grid-cols-2 gap-3">
-                {currentActorPkmn.moves.map(({ move, currentPp }) => (
-                  <button
-                    key={move.id}
-                    className={`btn-move move-type-${move.type.toLowerCase()}`}
-                    onClick={() => handleSelectMove(move)}
-                    disabled={currentPp <= 0 || isTurnProcessing}
-                  >
-                    <div className="move-btn-top">
-                      <span className="move-title">{move.name}</span>
-                      <span className="move-pp">{currentPp}/{move.maxPp} PP</span>
-                    </div>
-                    <div className="move-btn-bottom">
-                      <span className={`type-tag type-${move.type.toLowerCase()}`} style={{ fontSize: '0.6rem', padding: '0.1rem 0.45rem' }}>
-                        {move.type}
-                      </span>
-                      <span className="move-bp">
-                        {move.category} • {move.power ? `${move.power} BP` : 'Status'} • {move.accuracy || 100}% Acc
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {isWaitingForOpponentTurn && !winner && (
-            <div className="glass-panel" style={{ padding: '2.5rem', textAlign: 'center', borderColor: 'var(--primary)', backgroundColor: 'rgba(99, 102, 241, 0.08)' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <div style={{ width: '22px', height: '22px', border: '3px solid var(--primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                  <span style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text)' }}>
-                    Moves Locked In!
-                  </span>
-                </div>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>
-                  Waiting for {roomId === 'LOCAL_SOLO' ? 'CPU' : 'opponent'} to complete their turn choices...
-                </p>
-              </div>
-            </div>
-          )}
-
-          {winner && (
-            <div className="victory-card flex flex-col items-center justify-center p-6">
-              <Award size={48} className="text-yellow-400 mb-2" />
-              <h2>{winner === 'Player' ? 'Victory!' : winner === 'Draw' ? 'Draw!' : 'Defeat!'}</h2>
-              <button className="btn-primary mt-4 flex items-center gap-2" onClick={onExit}>
-                <ArrowLeft size={16} /> Return to Lobby
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Live Battle Log Feed */}
-        <div className="battle-log-panel col-span-1">
-          <h4 className="font-bold text-sm text-slate-200">Battle Log</h4>
-          <div className="battle-log-feed">
-            {battleLog.map((log, i) => (
-              <p key={i} className="log-line">
-                {log}
-              </p>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Target Selection Modal */}
-      {targetModalMove && (
-        <div className="modal-overlay fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div className="modal-card bg-slate-900 border border-glass p-6 rounded-2xl max-w-lg w-full text-center space-y-4 shadow-2xl">
-            <div className="flex justify-between items-center border-b border-glass pb-2">
-              <h3 className="font-bold text-base text-white">Select Target for {targetModalMove.name}</h3>
-              <button
-                className="btn-secondary text-xs px-2.5 py-1 flex items-center gap-1 text-amber-300 border-amber-500/40"
-                onClick={() => setTargetModalMove(null)}
-              >
-                <ArrowLeft size={14} /> Back to Moves
-              </button>
-            </div>
-            <div className="target-buttons grid grid-cols-2 gap-3 pt-2">
-              {oppActiveIndices.map((idx, slot) => {
-                const oppPkmn = opponentTeamState[idx];
-                if (!oppPkmn || oppPkmn.isFainted) return null;
-                const hpPct = Math.round((oppPkmn.currentHp / oppPkmn.maxStats.hp) * 100);
-                return (
-                  <button
-                    key={slot}
-                    className="reticle-target p-4 rounded-xl border border-glass bg-slate-900/80 flex flex-col items-center group cursor-pointer"
-                    onClick={() => handleTargetConfirm(slot)}
-                  >
-                    <div className="relative mb-2">
-                      <img src={oppPkmn.activeSpriteUrl || oppPkmn.species.spriteUrl} alt={oppPkmn.nickname} className="w-16 h-16 object-contain group-hover:scale-110 transition-transform duration-300" />
-                      {/* Animated crosshair overlay on hover */}
-                      <div className="absolute inset-0 border-2 border-indigo-400 rounded-full opacity-0 group-hover:opacity-100 group-hover:animate-ping pointer-events-none" style={{ animationDuration: '1.5s' }} />
-                    </div>
-                    <span className="text-sm font-extrabold text-white tracking-wide">Slot {slot + 1}: {oppPkmn.nickname}</span>
-                    <div className="flex gap-1 my-1">
-                      {oppPkmn.species.types.map((t) => (
-                        <span key={t} className={`type-tag type-${t.toLowerCase()}`} style={{ fontSize: '0.55rem', padding: '0.05rem 0.35rem' }}>
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1">
-                      <div
-                        className={`h-full ${hpPct < 20 ? 'bg-rose-500' : hpPct < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                        style={{ width: `${hpPct}%` }}
-                      />
-                    </div>
-                    <span className="text-[10px] text-slate-400 mt-0.5">{oppPkmn.currentHp} / {oppPkmn.maxStats.hp} HP</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Replacement Selection Modal - Only shown after everyone's turn is finished */}
       {pendingReplacements.length > 0 && (
-        <div className="modal-overlay fixed inset-0 bg-black/85 flex items-center justify-center p-4 z-50 animate-in">
-          <div className="modal-card bg-slate-900 border border-indigo-500/60 p-6 rounded-2xl max-w-xl w-full text-center space-y-4 shadow-2xl">
-            <div className="text-center pb-2 border-b border-glass">
-              <h3 className="font-extrabold text-lg text-white flex items-center justify-center gap-2">
-                ⚠️ Send Out Replacement Pokémon
+        <div className="fixed inset-0 bg-black/85 flex items-center justify-center p-4 z-[100] animate-in fade-in">
+          <div className="bg-slate-900 border border-indigo-500/60 p-6 rounded-3xl max-w-xl w-full text-center space-y-4 shadow-2xl">
+            <div className="text-center pb-3 border-b border-white/10">
+              <h3 className="font-extrabold text-xl text-white flex items-center justify-center gap-2">
+                ⚠️ Send Out Replacement
               </h3>
-              <p className="text-xs text-slate-300 mt-1">
-                <strong className="text-rose-400">{pendingReplacements[0].faintedMonName}</strong> fainted! Choose a bench Pokémon to send out:
+              <p className="text-sm text-slate-300 mt-1">
+                <strong className="text-rose-400">{pendingReplacements[0].faintedMonName}</strong> fainted! Choose a bench Pokémon:
               </p>
             </div>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
               {myTeamState.map((pkmn, benchIdx) => {
                 const isCurrentlyActive = myActiveIndices.includes(benchIdx);
                 const isFainted = pkmn.isFainted || pkmn.currentHp <= 0;
                 if (isCurrentlyActive || isFainted) return null;
-
-                const spec = pkmn.species;
                 const hpPct = Math.round((pkmn.currentHp / pkmn.maxStats.hp) * 100);
-
                 return (
                   <button
                     key={pkmn.instanceId}
                     onClick={() => handleChooseReplacement(benchIdx)}
-                    className="p-3 rounded-xl border border-glass bg-slate-950/80 hover:bg-indigo-950/80 hover:border-indigo-400 flex items-center gap-3 transition-all text-left group"
+                    className="p-3 rounded-2xl border border-white/10 bg-slate-800 hover:bg-indigo-900/80 hover:border-indigo-400 flex items-center gap-3 transition-all text-left group"
                   >
                     <img
-                      src={pkmn.activeSpriteUrl || spec.spriteUrl}
+                      src={pkmn.activeSpriteUrl || pkmn.species.spriteUrl}
                       alt={pkmn.nickname}
-                      className="w-14 h-14 object-contain group-hover:scale-110 transition-transform"
+                      className="w-16 h-16 object-contain group-hover:scale-110 transition-transform"
                     />
                     <div className="flex-1 min-w-0">
                       <div className="font-bold text-sm text-white truncate">{pkmn.nickname}</div>
                       <div className="text-xs text-slate-400">Lv. {pkmn.level}</div>
-                      <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden mt-1.5">
+                      <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden mt-1.5 border border-slate-700">
                         <div
                           className={`h-full ${hpPct < 20 ? 'bg-rose-500' : hpPct < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
                           style={{ width: `${hpPct}%` }}
@@ -1731,15 +705,14 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         </div>
       )}
 
-      {/* Battle Calculator In-Battle Modal */}
       {showBattleCalc && (
-        <div className="modal-overlay fixed inset-0 bg-black/90 flex items-center justify-center p-4 z-50 animate-in">
-          <div className="bg-slate-950 border border-glass rounded-2xl w-full max-w-6xl max-h-[92vh] overflow-y-auto p-4 shadow-2xl relative">
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center p-4 z-[100] animate-in fade-in slide-in-from-bottom-8">
+          <div className="bg-slate-950 border border-slate-800 rounded-3xl w-full max-w-6xl max-h-[92vh] overflow-y-auto p-4 shadow-2xl relative">
             <button
-              className="btn-secondary absolute top-4 right-4 text-xs px-3 py-1 flex items-center gap-1 text-slate-300 hover:text-white"
+              className="absolute top-4 right-4 text-xs px-4 py-2 rounded-full bg-rose-500/20 text-rose-300 hover:bg-rose-500/40 hover:text-white transition-colors flex items-center gap-2 font-bold z-10"
               onClick={() => setShowBattleCalc(false)}
             >
-              <X size={16} /> Close Calculator
+              ✕ Close Calculator
             </button>
             <BattleCalculator
               playerTeam={myTeamState.map(p => ({
@@ -1758,7 +731,6 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
-

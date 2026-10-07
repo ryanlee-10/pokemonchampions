@@ -1,115 +1,67 @@
 import React from 'react';
-import { Swords, Dumbbell, Package, Sparkles, Calculator } from 'lucide-react';
-import type { CustomPokemon } from '../types/pokemon';
+import { motion } from 'motion/react';
+import { MultiplayerIcon, CpuBattleIcon, TeambuilderIcon } from '../app/icons';
 
-interface MainMenuProps {
-  onSelectBattle: () => void;
-  onSelectTraining: () => void;
-  onSelectBoxes: () => void;
-  onSelectCalculator: () => void;
-  activeTeam: CustomPokemon[];
-  pcBoxCount: number;
+interface Props {
+  onMultiplayer: () => void;
+  onCpu: () => void;
+  onTeambuilder: () => void;
+  onDamageCalc: () => void;
+  teamCount: number;
 }
 
-export const MainMenu: React.FC<MainMenuProps> = ({
-  onSelectBattle,
-  onSelectTraining,
-  onSelectBoxes,
-  onSelectCalculator,
-  activeTeam,
-  pcBoxCount
-}) => {
+const container = { hidden: {}, show: { transition: { staggerChildren: 0.08 } } };
+const item = {
+  hidden: { opacity: 0, y: 28, scale: 0.96 },
+  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 260, damping: 24 } },
+};
+
+export const MainMenu: React.FC<Props> = ({ onMultiplayer, onCpu, onTeambuilder, onDamageCalc, teamCount }) => {
+  const Tile: React.FC<{
+    id: string; cls: string; title: string; sub: string;
+    icon: React.ReactNode; onClick: () => void; children?: React.ReactNode;
+  }> = ({ id, cls, title, sub, icon, onClick, children }) => (
+    <motion.div
+      variants={item}
+      id={id}
+      role="button"
+      tabIndex={0}
+      className={`menu-tile ${cls}`}
+      onClick={onClick}
+      onKeyDown={(e) => e.key === 'Enter' && onClick()}
+      whileHover={{ y: -8, scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 26 }}
+    >
+      <span className="tile-sheen" />
+      <div className="tile-icon">{icon}</div>
+      <div className="tile-text">
+        <h2>{title}</h2>
+        <p>{sub}</p>
+      </div>
+      {children}
+    </motion.div>
+  );
+
   return (
-    <div className="main-menu-scene animate-in">
-      <div className="hero-section">
-        <div className="hero-badge">
-          <Sparkles size={16} /> Regulation M-C Cloud Engine
-        </div>
-        <h1 className="hero-title">
-          Pokémon Champions
-        </h1>
-        <p className="hero-subtitle">
-          Competitive Pokémon VGC simulator with zero IVs, free WebRTC cloud relay multiplayer, deep training EV spreads, battle damage calculator, and box management.
-        </p>
+    <motion.div className="menu-screen" variants={container} initial="hidden" animate="show">
+      <motion.header variants={item} className="menu-title">
+        <small>Pokémon</small>
+        <h1>Zenith</h1>
+      </motion.header>
+      <div className="menu-tiles">
+        <Tile id="tile-multiplayer" cls="t-mp" title="Multiplayer Battle" sub="Create or join a room and battle a friend" icon={<MultiplayerIcon size={64} />} onClick={onMultiplayer} />
+        <Tile id="tile-cpu" cls="t-cpu" title="CPU Battle" sub="Singles or Doubles against the bot" icon={<CpuBattleIcon size={64} />} onClick={onCpu} />
+        <Tile id="tile-teambuilder" cls="t-tb" title="Teambuilder" sub={`${teamCount} team${teamCount === 1 ? '' : 's'} · Boxes · Training`} icon={<TeambuilderIcon size={64} />} onClick={onTeambuilder}>
+          <button
+            id="tile-damage-calc"
+            className="tile-sub"
+            onClick={(e) => { e.stopPropagation(); onDamageCalc(); }}
+          >
+            Damage Calc ›
+          </button>
+        </Tile>
       </div>
-
-      <div className="menu-cards-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
-        {/* Option 1: Battle */}
-        <div className="menu-card glass-card battle-card" onClick={onSelectBattle}>
-          <div className="menu-card-icon">
-            <Swords size={32} />
-          </div>
-          <h2 className="menu-card-title">Battle</h2>
-          <p className="menu-card-desc">
-            Enter or host room codes using the free WebRTC cloud relay server. Play 1v1 Singles, 2v2 Doubles, or practice solo vs CPU.
-          </p>
-          <div className="menu-card-footer">
-            <span className="menu-card-meta">
-              Cloud Relay P2P
-            </span>
-            <button className="btn-primary">
-              Enter Lobby &rarr;
-            </button>
-          </div>
-        </div>
-
-        {/* Option 2: Training */}
-        <div className="menu-card glass-card training-card" onClick={onSelectTraining}>
-          <div className="menu-card-icon">
-            <Dumbbell size={32} />
-          </div>
-          <h2 className="menu-card-title">Training</h2>
-          <p className="menu-card-desc">
-            Customize EV stat spreads (0–252 per stat, 510 total budget), choose learnable moves from roster learnsets, and set Pokémon natures.
-          </p>
-          <div className="menu-card-footer">
-            <span className="menu-card-meta">
-              EVs & Movesets
-            </span>
-            <button className="btn-secondary">
-              Train Pokémon &rarr;
-            </button>
-          </div>
-        </div>
-
-        {/* Option 3: Boxes */}
-        <div className="menu-card glass-card boxes-card" onClick={onSelectBoxes}>
-          <div className="menu-card-icon">
-            <Package size={32} />
-          </div>
-          <h2 className="menu-card-title">Boxes</h2>
-          <p className="menu-card-desc">
-            Manage your PC Storage Box, assemble your active 6-Pokémon battle team, equip held items with Item Clause, and organize teams.
-          </p>
-          <div className="menu-card-footer">
-            <span className="menu-card-meta">
-              Team: {activeTeam.length}/6 | Box: {pcBoxCount}
-            </span>
-            <button className="btn-secondary">
-              Open Boxes &rarr;
-            </button>
-          </div>
-        </div>
-
-        {/* Option 4: Calculator */}
-        <div className="menu-card glass-card calc-card" onClick={onSelectCalculator} style={{ cursor: 'pointer' }}>
-          <div className="menu-card-icon" style={{ color: '#38bdf8' }}>
-            <Calculator size={32} />
-          </div>
-          <h2 className="menu-card-title">Battle Calculator</h2>
-          <p className="menu-card-desc">
-            Calculate damage rolls and benchmark OHKO / 2HKO odds across multiple Pokémon simultaneously or analyze 1v1 matchups in depth.
-          </p>
-          <div className="menu-card-footer">
-            <span className="menu-card-meta">
-              Multi-Target OHKO Benchmarks
-            </span>
-            <button className="btn-secondary" style={{ borderColor: 'rgba(56, 189, 248, 0.4)', color: '#38bdf8' }}>
-              Open Calculator &rarr;
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    </motion.div>
   );
 };
