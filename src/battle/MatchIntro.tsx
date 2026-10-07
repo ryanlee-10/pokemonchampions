@@ -5,12 +5,12 @@ import { Shield } from 'lucide-react';
 interface MatchIntroProps {
   myLeads: ActivePokemonState[];
   oppLeads: ActivePokemonState[];
-  isHost: boolean;
+
   opponentName?: string;
   format: string;
 }
 
-export const MatchIntro: React.FC<MatchIntroProps> = ({ myLeads, oppLeads, isHost, opponentName, format }) => {
+export const MatchIntro: React.FC<MatchIntroProps> = ({ myLeads, oppLeads, opponentName, format }) => {
   const [stage, setStage] = useState(0);
 
   useEffect(() => {

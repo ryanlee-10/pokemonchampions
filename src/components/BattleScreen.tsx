@@ -10,23 +10,17 @@ import type {
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
-import { calculateDamage, isGrounded } from '../engine/damageCalc';
-import { resolveTurnCore } from '../engine/battleEngine';
+import { resolveTurnCore, checkEntranceAbilities } from '../engine/battleEngine';
 import { peerManager } from '../network/peerManager';
 import type { NetworkMessage } from '../network/peerManager';
 import { generateRandomCpuTeam } from '../utils/showdownParser';
-import { X } from 'lucide-react';
 import { BattleCalculator } from './BattleCalculator';
-import { useAppStore, animSpeedFactor } from '../app/store';
-import type { BattleEvent, BattleSnap, ChatMessage, LogEntry, LogKind, LogMeta, MatchStats, StageStat } from '../battle/types';
-import { STAT_ORDER } from '../battle/types';
+
 import { TeamPreview } from '../battle/TeamPreview';
 import { MatchIntro } from '../battle/MatchIntro';
 import { BattleView } from '../battle/BattleView';
 import { ResultScreen } from '../battle/ResultScreen';
 
-const PROTECT_MOVES = ['protect', 'detect', 'spiky_shield', 'baneful_bunker', 'king_s_shield', 'silk_trap', 'burning_bulwark'];
-const INTIMIDATE_IMMUNE = ['Inner Focus', 'Own Tempo', 'Oblivious', 'Scrappy', 'Clear Body', 'White Smoke', 'Hyper Cutter', 'Full Metal Body', 'Guard Dog'];
 
 interface BattleScreenProps {
   format: BattleFormat;
@@ -45,11 +39,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   isHost,
   roomId,
   onExit,
-  onRematch,
-  opponentTeam,
   opponentName
 }) => {
-  const profileName = useAppStore((s) => s.profile.name);
   // Convert custom team to initial active state
   const initializeTeamState = (team: CustomPokemon[], prefix = ''): ActivePokemonState[] => {
     return team.map((p) => {
@@ -84,8 +75,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const requiredPicks = format === 'Singles' ? 3 : 4;
   const [phase, setPhase] = useState<'PREVIEW' | 'INTRO' | 'BATTLE'>('PREVIEW');
   const [selectedPickIds, setSelectedPickIds] = useState<string[]>([]);
-  const [cpuFullTeam] = useState<CustomPokemon[]>(() => generateRandomCpuTeam());
-  const previewOppTeam: CustomPokemon[] = roomId === 'LOCAL_SOLO' ? cpuFullTeam : (opponentTeam ?? []);
+
 
   const handleTogglePick = (id: string) => {
     if (selectedPickIds.includes(id)) {
@@ -95,88 +85,6 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         setSelectedPickIds([...selectedPickIds, id]);
       }
     }
-  };
-
-  type Logger = (msg: string, meta?: LogMeta) => void;
-
-  const checkEntranceAbilities = (
-    enteringMon: ActivePokemonState,
-    currentFields: BattleFieldConditions,
-    logger?: Logger,
-    foes?: ActivePokemonState[]
-  ): BattleFieldConditions => {
-    const updated = { ...currentFields };
-    const logFn: Logger = logger || addLog;
-    const ab = enteringMon.ability;
-    const announce = () =>
-      logFn(`${enteringMon.nickname}'s ${ab}`, { kind: 'ability', id: enteringMon.instanceId, field: { ...updated } });
-    const effect = (text: string) => logFn(text, { kind: 'field', field: { ...updated } });
-    if (ab === 'Grassy Surge') {
-      updated.terrain = 'Grassy';
-      updated.terrainTurns = 5;
-      announce();
-      effect('Grass grew to cover the battlefield!');
-    } else if (ab === 'Psychic Surge') {
-      updated.terrain = 'Psychic';
-      updated.terrainTurns = 5;
-      announce();
-      effect('The battlefield got weird!');
-    } else if (ab === 'Electric Surge' || ab === 'Hadron Engine') {
-      updated.terrain = 'Electric';
-      updated.terrainTurns = 5;
-      announce();
-      effect('An electric current ran across the battlefield!');
-    } else if (ab === 'Misty Surge') {
-      updated.terrain = 'Misty';
-      updated.terrainTurns = 5;
-      announce();
-      effect('Mist swirled about the battlefield!');
-    } else if (ab === 'Drought') {
-      updated.weather = 'Sun';
-      updated.weatherTurns = 5;
-      announce();
-      effect('The sunlight turned harsh!');
-    } else if (ab === 'Drizzle') {
-      updated.weather = 'Rain';
-      updated.weatherTurns = 5;
-      announce();
-      effect('It started to rain!');
-    } else if (ab === 'Sand Stream') {
-      updated.weather = 'Sandstorm';
-      updated.weatherTurns = 5;
-      announce();
-      effect('A sandstorm kicked up!');
-    } else if (ab === 'Snow Warning') {
-      updated.weather = 'Snow';
-      updated.weatherTurns = 5;
-      announce();
-      effect('It started to snow!');
-    } else if (ab === 'Intimidate') {
-      announce();
-      (foes || [])
-        .filter((f) => f && !f.isFainted && f.currentHp > 0)
-        .forEach((foe) => {
-          if (INTIMIDATE_IMMUNE.includes(foe.ability)) {
-            logFn(`${foe.nickname}'s ${foe.ability} prevents Attack loss!`, { kind: 'ability', id: foe.instanceId });
-            return;
-          }
-          const cur = foe.statStages.attack || 0;
-          if (cur <= -6) {
-            logFn(`${foe.nickname}'s Attack won't go any lower!`, { kind: 'stat', id: foe.instanceId });
-            return;
-          }
-          foe.statStages.attack = cur - 1;
-          logFn(`${foe.nickname}'s Attack dropped by 1 stage!`, { kind: 'stat', id: foe.instanceId, dir: 'down', stat: 'attack' });
-          if (foe.ability === 'Defiant') {
-            foe.statStages.attack = Math.min(6, foe.statStages.attack + 2);
-            logFn(`${foe.nickname}'s Defiant sharply raised its Attack!`, { kind: 'stat', id: foe.instanceId, dir: 'up', stat: 'attack' });
-          } else if (foe.ability === 'Competitive') {
-            foe.statStages.spAtk = Math.min(6, (foe.statStages.spAtk || 0) + 2);
-            logFn(`${foe.nickname}'s Competitive sharply raised its Sp. Atk!`, { kind: 'stat', id: foe.instanceId, dir: 'up', stat: 'spAtk' });
-          }
-        });
-    }
-    return updated;
   };
 
   const [myTeamState, setMyTeamState] = useState<ActivePokemonState[]>(() =>
@@ -243,10 +151,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     const hostLeads = isHost ? myLeads : oppLeads;
     const guestLeads = isHost ? oppLeads : myLeads;
     hostLeads.forEach((m) => {
-      initField = checkEntranceAbilities(m, initField, undefined, guestLeads);
+      initField = checkEntranceAbilities(m, initField, addLog, guestLeads);
     });
     guestLeads.forEach((m) => {
-      initField = checkEntranceAbilities(m, initField, undefined, hostLeads);
+      initField = checkEntranceAbilities(m, initField, addLog, hostLeads);
     });
     setFieldConditions(initField);
     fieldConditionsRef.current = initField;
@@ -331,11 +239,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
   const [isMegaChecked, setIsMegaChecked] = useState<boolean>(false);
 
-  const getMatchingMegaForm = (pkmn?: ActivePokemonState) => {
-    if (!pkmn || pkmn.isMegaEvolved || !pkmn.species.megaForm) return null;
-    const megaForms = Array.isArray(pkmn.species.megaForm) ? pkmn.species.megaForm : [pkmn.species.megaForm];
-    return megaForms.find((mf) => mf.megaStoneId === pkmn.item) || null;
-  };
+
 
   const handleSelectMove = (move: Move) => {
     // If doubles and move targets single enemy, open target picker modal
@@ -379,8 +283,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     return p && !p.isFainted && p.currentHp > 0;
   });
 
-  const currentActorSlotIdx = alivePlayerActiveIndices[selectedActorIndex] ?? alivePlayerActiveIndices[0];
-  const currentActorPkmn = myTeamState[currentActorSlotIdx];
+
+
 
   const handleSelectSwitch = (teamIndex: number) => {
     submitAction({
@@ -461,7 +365,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       opponentTeamStateRef.current,
       fieldConditionsRef.current,
       myActiveIndicesRef.current,
-      oppActiveIndicesRef.current
+      oppActiveIndicesRef.current,
+      format
     );
 
     // Send Authoritative GAME_STATE_UPDATE to Guest
@@ -553,7 +458,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       opponentTeamStateRef.current,
       fieldConditionsRef.current,
       myActiveIndicesRef.current,
-      oppActiveIndicesRef.current
+      oppActiveIndicesRef.current,
+      format
     );
 
     setMyTeamState(turnResult.nextHostTeam);
@@ -583,7 +489,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     if (sentMon) {
       setMyTeamState((prev) => prev.map((p, i) => (i === benchTeamIndex ? { ...p, turnsOnField: 1 } : p)));
       addLog(`✨ Go, ${sentMon.nickname}!`);
-      setFieldConditions((prev) => checkEntranceAbilities(sentMon, prev));
+      setFieldConditions((prev) => checkEntranceAbilities(sentMon, prev, addLog));
     }
 
     const remaining = pendingReplacements.slice(1);
@@ -623,7 +529,6 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       <MatchIntro
         myLeads={myLeads}
         oppLeads={oppLeads}
-        isHost={isHost}
         opponentName={opponentName}
         format={format}
       />
