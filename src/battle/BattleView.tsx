@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Award, Info, Swords, Pocket } from 'lucide-react';
+import { ArrowLeft, Award, Info, Swords, Package } from 'lucide-react';
 import type { ActivePokemonState, BattleAction, BattleFieldConditions, Move } from '../types/pokemon';
 
 export interface BattleViewProps {
@@ -245,7 +245,7 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
               onClick={() => setViewState('POKEMON')}
               className="w-24 h-24 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 border-4 border-emerald-300 flex flex-col items-center justify-center shadow-[0_0_20px_rgba(16,185,129,0.5)] hover:scale-105 hover:shadow-[0_0_40px_rgba(16,185,129,0.7)] transition-all transform hover:rotate-6"
             >
-              <Pocket size={28} className="text-white mb-1" />
+              <Package size={28} className="text-white mb-1" />
               <span className="text-white font-black tracking-wider text-sm" style={{ textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>POKÉMON</span>
             </button>
           </div>
