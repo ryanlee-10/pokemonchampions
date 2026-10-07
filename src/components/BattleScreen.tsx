@@ -407,7 +407,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
             : oppPkmn.moves[0];
           return {
             playerId: 'cpu',
-            actorIndex: slot,
+            actorIndex: oppActiveIndices.indexOf(oppIdx),
             type: 'MOVE',
             moveId: chosenMove.move.id,
             targetSlot: Math.floor(Math.random() * Math.max(1, alivePlayerActiveIndices.length))
