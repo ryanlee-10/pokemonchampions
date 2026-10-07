@@ -2,7 +2,7 @@ import React from 'react';
 import { ArrowLeft, Shield, Sparkles } from 'lucide-react';
 import type { BattleFormat, CustomPokemon } from '../types/pokemon';
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
-import { HELD_ITEMS } from '../data/heldItems';
+import { HELD_ITEMS } from '../data/items';
 
 interface TeamPreviewProps {
   format: BattleFormat;
@@ -11,7 +11,7 @@ interface TeamPreviewProps {
   selectedPickIds: string[];
   isWaitingForOpponentTeam: boolean;
   onTogglePick: (id: string) => void;
-  onConfirm: () => void;
+  onConfirm: (forcedPicks?: string[]) => void;
   onExit: () => void;
 }
 
@@ -31,14 +31,15 @@ export const TeamPreview: React.FC<TeamPreviewProps> = ({
     if (isWaitingForOpponentTeam) return;
     if (timeLeft <= 0) {
       // Auto-fill remaining picks if needed
-      if (selectedPickIds.length < requiredPicks) {
+      let finalPicks = [...selectedPickIds];
+      if (finalPicks.length < requiredPicks) {
         playerTeam.forEach((pkmn) => {
-          if (!selectedPickIds.includes(pkmn.id) && selectedPickIds.length < requiredPicks) {
-            onTogglePick(pkmn.id);
+          if (!finalPicks.includes(pkmn.id) && finalPicks.length < requiredPicks) {
+            finalPicks.push(pkmn.id);
           }
         });
       }
-      onConfirm();
+      onConfirm(finalPicks);
       return;
     }
     const timer = setTimeout(() => setTimeLeft(prev => prev - 1), 1000);

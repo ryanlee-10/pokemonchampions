@@ -258,11 +258,14 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     }, 3400);
   };
 
-  const handleConfirmTeamSelection = () => {
-    if (selectedPickIds.length < requiredPicks) return;
+  const handleConfirmTeamSelection = (forcedPickIds?: string[]) => {
+    const finalPicks = forcedPickIds || selectedPickIds;
+    if (finalPicks.length < requiredPicks) return;
+
+    if (forcedPickIds) setSelectedPickIds(forcedPickIds);
 
     const fullPlayerTeam = playerTeam.length > 0 ? playerTeam : generateRandomCpuTeam();
-    const chosenPlayerMons = selectedPickIds
+    const chosenPlayerMons = finalPicks
       .map((id) => fullPlayerTeam.find((p) => p.id === id))
       .filter(Boolean) as CustomPokemon[];
 
@@ -535,7 +538,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     return () => {
       peerManager.setMessageCallback(undefined);
     };
-  });
+  }, [roomId, isHost]);
 
   const resolveSoloTurn = (myActs: BattleAction[], aiActs: BattleAction[]) => {
     setIsTurnProcessing(true);
