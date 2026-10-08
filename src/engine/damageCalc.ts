@@ -1,6 +1,7 @@
 import type { ActivePokemonState, BattleFormat, Move } from '../types/pokemon';
 import { getTypeEffectiveness } from '../data/typeChart';
 import { getStatStageMultiplier } from './statCalc';
+export const INTIMIDATE_IMMUNE = ['Inner Focus', 'Own Tempo', 'Oblivious', 'Scrappy', 'Clear Body', 'White Smoke', 'Hyper Cutter', 'Full Metal Body', 'Guard Dog'];
 
 export interface DamageResult {
   damage: number;

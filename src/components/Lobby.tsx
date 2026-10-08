@@ -201,30 +201,6 @@ export const Lobby: React.FC<LobbyProps> = ({
               </select>
             )}
 
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                padding: '0.2rem 0.6rem',
-                borderRadius: '1rem',
-                backgroundColor: isItemClauseValid ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.2)',
-                border: `1px solid ${isItemClauseValid ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.5)'}`,
-                color: isItemClauseValid ? '#4ade80' : '#f87171'
-              }}
-            >
-              {isItemClauseValid ? (
-                <>
-                  <ShieldCheck size={13} /> Item Clause: Valid
-                </>
-              ) : (
-                <>
-                  <AlertTriangle size={13} /> Item Clause Violation
-                </>
-              )}
-            </div>
           </div>
 
 

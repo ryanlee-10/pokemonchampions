@@ -95,6 +95,8 @@ export interface ActivePokemonState {
   nickname: string;
   level: number;
   item: string;
+  /** True once the held item has been used up (berries etc.); the UI shows it faded. */
+  itemConsumed?: boolean;
   ability: string;
   
   // Mega Evolution battle state

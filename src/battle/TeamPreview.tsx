@@ -74,7 +74,7 @@ export const TeamPreview: React.FC<TeamPreviewProps> = ({
           className="btn-primary"
           style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam) ? 0.5 : 1, cursor: (selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam) ? 'not-allowed' : 'pointer' }}
           disabled={selectedPickIds.length < requiredPicks || isWaitingForOpponentTeam}
-          onClick={onConfirm}
+          onClick={() => onConfirm()}
         >
           <Sparkles size={16} /> Confirm & Enter ({selectedPickIds.length} / {requiredPicks})
         </button>
@@ -154,7 +154,7 @@ export const TeamPreview: React.FC<TeamPreviewProps> = ({
                     <h4 style={{ fontWeight: 800, fontSize: '1rem', color: isPicked ? '#fff' : 'var(--text)', margin: 0 }}>{pkmn.nickname || spec?.name}</h4>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Lv. {pkmn.level || 50}</span>
                     <div style={{ display: 'flex', gap: '0.25rem', marginTop: '0.25rem' }}>
-                      {spec?.types.map((t) => (
+                      {(spec?.types || []).map((t) => (
                         <span key={t} className={`type-tag type-${t.toLowerCase()}`} style={{ fontSize: '0.55rem', padding: '0.1rem 0.4rem', borderRadius: '1rem', textTransform: 'uppercase', fontWeight: 800 }}>
                           {t}
                         </span>

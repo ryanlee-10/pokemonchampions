@@ -292,25 +292,6 @@ export const BoxesScreen: React.FC<BoxesScreenProps> = ({
             <button className="btn-ghost text-xs" onClick={handleCreateNewTeam}>
               <Plus size={14} /> New Team
             </button>
-            <div
-              className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold"
-              style={{
-                backgroundColor: !hasItemClauseViolation ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.2)',
-                border: `1px solid ${!hasItemClauseViolation ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.5)'}`,
-                color: !hasItemClauseViolation ? '#4ade80' : '#f87171'
-              }}
-              title={hasItemClauseViolation ? 'Multiple Pokémon on this team hold the same item!' : 'Item Clause: Valid'}
-            >
-              {!hasItemClauseViolation ? (
-                <>
-                  <ShieldCheck size={13} /> Item Clause: Valid
-                </>
-              ) : (
-                <>
-                  <AlertTriangle size={13} /> Item Clause: Duplicate Item!
-                </>
-              )}
-            </div>
           </div>
 
           <div className="glass-card team-slots-container">

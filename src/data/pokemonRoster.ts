@@ -637,7 +637,7 @@ export const POKEMON_ROSTER: PokemonSpecies[] = [
     types: ['Electric', 'Water'],
     baseStats: { hp: 50, attack: 65, defense: 107, spAtk: 105, spDef: 107, speed: 86 },
     abilities: ['Levitate'],
-    spriteUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/10008.png',
+    spriteUrl: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/10009.png',
     learnset: ['hydro_pump', 'volt_switch', 'will_o_wisp', 'thunderbolt', 'protect']
   },
   // 50. Scrafty / Mega Scrafty

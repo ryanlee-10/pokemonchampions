@@ -1,4 +1,4 @@
-﻿/* ===== PokÃ©mon Zenith design system ===== */
+/* ===== PokÃ©mon Zenith design system ===== */
 :root {
   --z-bg: #07070f;
   --z-panel: rgba(18, 20, 36, 0.72);
@@ -151,8 +151,11 @@ button { font-family: inherit; color: inherit; }
 .intro-text { text-align: center; }
 .intro-text small { display: block; font-size: 22px; letter-spacing: 0.5em; text-transform: uppercase; color: var(--z-accent2); margin-bottom: 8px; }
 .intro-text h1 { font-family: var(--font-display); font-size: clamp(48px, 9vw, 120px); font-weight: 800; letter-spacing: 0.04em; background: linear-gradient(90deg, #fff, #c4b5fd, #67e8f9); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
-.intro-types { display: flex; gap: 36px; }
-.intro-type { width: 150px; height: 150px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 20px; color: #0b0b18; text-transform: uppercase; letter-spacing: 0.08em; }
+.intro-types { display: grid; place-items: center; }
+.type-ring { position: relative; width: 0; height: 0; }
+.type-ring-spin, .type-ring-slot { position: absolute; top: 0; left: 0; width: 0; height: 0; }
+.type-ring-slot { display: grid; place-items: center; }
+.type-ring-icon { position: absolute; margin: -29px 0 0 -29px; border-radius: 50%; display: grid; place-items: center; border: 2px solid rgba(255,255,255,0.5); box-sizing: border-box; }
 .intro-flash { position: absolute; inset: 0; background: #fff; pointer-events: none; }
 .premenu { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #05050d; overflow: hidden; }
 .premenu-bg { position: absolute; inset: -20%; background: conic-gradient(from 0deg at 50% 50%, rgba(124, 108, 255, 0.22), rgba(34, 211, 238, 0.12), rgba(255, 77, 141, 0.18), rgba(124, 108, 255, 0.22)); filter: blur(80px); animation: spin 24s linear infinite; }

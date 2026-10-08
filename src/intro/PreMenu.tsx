@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { motion, useMotionValue, useSpring, useTransform } from 'motion/react';
 import { audioManager } from '../audio/audioManager';
 import { ZenithLogo } from './ZenithLogo';
+import { PreMenuBg } from './PreMenuBg';
 
 const BARS = 72;
 
@@ -74,7 +75,7 @@ export const PreMenu: React.FC<Props> = ({ onEnter }) => {
 
   return (
     <motion.div className="premenu" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, scale: 1.15, filter: 'blur(8px)' }} transition={{ duration: 0.5 }}>
-      <div className="premenu-bg" />
+      <PreMenuBg />
       <motion.div
         className="premenu-logo"
         onPointerMove={onMove}

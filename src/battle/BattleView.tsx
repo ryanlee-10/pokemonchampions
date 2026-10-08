@@ -1,18 +1,26 @@
-import React, { useState } from 'react';
-import { ArrowLeft, Info, Swords, Package, ChevronLeft, Target } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, Info } from 'lucide-react';
 import '../styles/battleview.css';
 import type { ActivePokemonState, BattleAction, BattleFieldConditions, Move } from '../types/pokemon';
+import type { LogMeta } from '../engine/battleEngine';
+import { TYPE_COLORS, TypeBadge } from '../intro/TypeRing';
+import { PokeballIcon } from '../app/icons';
+import { getSpriteUrls, STAT_LABEL } from './types';
+import { SwitchScreen } from './SwitchScreen';
 
 export interface BattleViewProps {
   format: string;
   roomId: string;
+  isHost: boolean;
+  opponentName?: string;
+  turn: number;
   myTeamState: ActivePokemonState[];
   opponentTeamState: ActivePokemonState[];
   myActiveIndices: number[];
   oppActiveIndices: number[];
   fieldConditions: BattleFieldConditions;
-  battleLog: string[];
-  activeLogMessage: string | null;
+  battleLog: { text: string; meta?: LogMeta }[];
+  activeLogMessage: { text: string; meta?: LogMeta } | null;
   selectedActorIndex: number;
   pendingActions: BattleAction[];
   targetModalMove: Move | null;
@@ -28,283 +36,406 @@ export interface BattleViewProps {
   onExit: () => void;
   onShowCalc: () => void;
   onCancelTarget: () => void;
+  /** Called when the move timer hits 0 with choices still outstanding. */
+  onTimeout: () => void;
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  Normal: '#A8A77A', Fire: '#EE8130', Water: '#6390F0', Electric: '#F7D02C',
-  Grass: '#7AC74C', Ice: '#96D9D6', Fighting: '#C22E28', Poison: '#A33EA1',
-  Ground: '#E2BF65', Flying: '#A98FF3', Psychic: '#F95587', Bug: '#A6B91A',
-  Rock: '#B6A136', Ghost: '#735797', Dragon: '#6F35FC', Dark: '#705746',
-  Steel: '#B7B7CE', Fairy: '#D685AD',
+const MOVE_TIME = 45;
+const URGENT_AT = 10;
+
+type Panel = 'MAIN' | 'FIGHT' | 'POKEMON';
+
+const hpBand = (pct: number) => (pct > 50 ? 'ok' : pct > 20 ? 'mid' : 'low');
+const pctOf = (p: ActivePokemonState) => Math.max(0, Math.round((p.currentHp / p.maxStats.hp) * 100));
+
+/** Showdown animated sprite (front/back) with artwork fallback. */
+const MonSprite: React.FC<{ mon: ActivePokemonState; back?: boolean; className?: string }> = ({ mon, back, className }) => {
+  const urls = getSpriteUrls(mon.species.id);
+  const preferred = mon.isMegaEvolved && mon.activeSpriteUrl ? mon.activeSpriteUrl : (back ? urls.back : urls.front);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [preferred]);
+  return (
+    <img
+      className={className}
+      src={failed ? (mon.activeSpriteUrl || mon.species.spriteUrl) : preferred}
+      alt={mon.nickname}
+      draggable={false}
+      onError={() => setFailed(true)}
+    />
+  );
 };
+
+/** Row of tiny balls: filled green = still able to battle. */
+const PartyBalls: React.FC<{ team: ActivePokemonState[] }> = ({ team }) => (
+  <div className="bv-balls">
+    {team.map((p) => (
+      <span key={p.instanceId} className={`bv-ball ${p.currentHp > 0 && !p.isFainted ? 'alive' : 'down'}`} />
+    ))}
+  </div>
+);
+
+const FightGlyph = () => (
+  <svg viewBox="0 0 64 64" width="64" height="64" aria-hidden>
+    <g fill="none" stroke="currentColor" strokeWidth="4" strokeLinejoin="round" strokeLinecap="round">
+      <path d="M32 6l6 14 15-4-8 13 12 9-15 2 1 15-11-10-11 10 1-15-15-2 12-9-8-13 15 4z" />
+      <circle cx="32" cy="32" r="6" />
+    </g>
+  </svg>
+);
+
+const STAGE_KEYS: Array<keyof ActivePokemonState['statStages']> = ['attack', 'defense', 'spAtk', 'spDef', 'speed', 'accuracy', 'evasion'];
 
 export const BattleView: React.FC<BattleViewProps> = (props) => {
   const {
+    isHost, roomId, turn, opponentName,
     myTeamState, opponentTeamState, myActiveIndices, oppActiveIndices,
     fieldConditions, activeLogMessage, selectedActorIndex, targetModalMove,
-    isTurnProcessing, isWaitingForOpponentTurn, winner,
+    isTurnProcessing, isWaitingForOpponentTurn, winner, format,
     onSelectMove, onSelectSwitch, onTargetConfirm, onUndoAction, onExit, onShowCalc, onCancelTarget,
-    onToggleMega, isMegaChecked
+    onToggleMega, isMegaChecked, onTimeout,
   } = props;
 
-  const [viewState, setViewState] = useState<'MAIN' | 'FIGHT' | 'POKEMON'>('MAIN');
+  const [panel, setPanel] = useState<Panel>('MAIN');
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(MOVE_TIME);
 
-  const isInputActive = !isTurnProcessing && !isWaitingForOpponentTurn && !winner && !targetModalMove;
+  // Opposing Pokémon are "revealed" once they've been sent out at least once.
+  const [revealedOppIds, setRevealedOppIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setRevealedOppIds((prev) => {
+      const next = new Set(prev);
+      oppActiveIndices.forEach((i) => { const m = opponentTeamState[i]; if (m) next.add(m.instanceId); });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [oppActiveIndices, opponentTeamState]);
+
+  const isInputActive = !isTurnProcessing && !isWaitingForOpponentTurn && !winner;
+  const canChoose = isInputActive && !targetModalMove;
   const currentActorPkmn = myTeamState[myActiveIndices[selectedActorIndex]];
+  const timerRunning = isInputActive && !activeLogMessage;
+  const mySide = roomId === 'LOCAL_SOLO' || isHost ? 1 : 2;
 
-  const hpColor = (pct: number) => {
-    if (pct > 50) return '#4ade80';
-    if (pct > 20) return '#fbbf24';
-    return '#f87171';
-  };
+  // Fresh clock every turn; return to the main menu.
+  useEffect(() => { setTimeLeft(MOVE_TIME); setPanel('MAIN'); }, [turn]);
 
-  const getLogDisplay = () => {
-    if (activeLogMessage) return activeLogMessage;
-    if (isTurnProcessing) return "Processing turn...";
-    if (isWaitingForOpponentTurn) return "Waiting for opponent...";
-    if (winner) return "Battle Finished!";
-    if (targetModalMove) return `Select target for ${targetModalMove.name}`;
-    if (viewState === 'MAIN' && currentActorPkmn) return `What will ${currentActorPkmn.nickname} do?`;
-    if (viewState === 'FIGHT') return "Select a move!";
-    if (viewState === 'POKEMON') return "Switch to which Pokémon?";
-    return "Battle in progress...";
-  };
+  useEffect(() => {
+    if (!timerRunning) return;
+    const id = window.setInterval(() => setTimeLeft((t) => Math.max(0, t - 1)), 1000);
+    return () => window.clearInterval(id);
+  }, [timerRunning]);
+
+  useEffect(() => {
+    if (timeLeft === 0 && timerRunning) {
+      setPanel('MAIN');
+      onTimeout();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeLeft, timerRunning]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'x' || e.key === 'X') setInfoOpen((o) => !o);
+      if (e.key === 'Escape') { setInfoOpen(false); setPanel('MAIN'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const urgent = timerRunning && timeLeft <= URGENT_AT;
+
+  const logText = (() => {
+    if (activeLogMessage) return activeLogMessage.text;
+    if (targetModalMove) return `Select a target for ${targetModalMove.name}!`;
+    if (isTurnProcessing) return 'Processing turn...';
+    if (isWaitingForOpponentTurn) return 'Waiting for opponent...';
+    if (winner) return 'Battle Finished!';
+    return null;
+  })();
+
+  const arenaTint = (() => {
+    const w = fieldConditions.weather;
+    const t = fieldConditions.terrain;
+    if (w && w !== 'Clear') return `w-${w.toLowerCase()}`;
+    if (t && t !== 'None') return `t-${t.toLowerCase()}`;
+    return 'plain';
+  })();
+
+  const oppSlots = oppActiveIndices.map((idx) => ({ idx, mon: opponentTeamState[idx] })).filter((s) => s.mon);
+  const mySlots = myActiveIndices.map((idx, i) => ({ idx, i, mon: myTeamState[idx] })).filter((s) => s.mon);
+
+  const sideInfo = useMemo(() => {
+    const mk = (side: 1 | 2) => {
+      const f = fieldConditions as Record<string, number | undefined>;
+      return [
+        { label: 'Tailwind', turns: f[`tailwindTeam${side}`] },
+        { label: 'Reflect', turns: f[`reflectTeam${side}`] },
+        { label: 'Light Screen', turns: f[`lightScreenTeam${side}`] },
+        { label: 'Aurora Veil', turns: f[`auroraVeilTeam${side}`] },
+      ].filter((e) => (e.turns ?? 0) > 0);
+    };
+    const opp = (mySide === 1 ? 2 : 1) as 1 | 2;
+    return { mine: mk(mySide as 1 | 2), theirs: mk(opp) };
+  }, [fieldConditions, mySide]);
+
+  const statLines = (mon: ActivePokemonState) =>
+    STAGE_KEYS.filter((k) => mon.statStages?.[k]).map((k) => ({ k, v: mon.statStages[k] }));
+
+  const isDoubles = format === 'Doubles' || mySlots.length > 1 || oppSlots.length > 1;
 
   return (
-    <div className="battle-arena">
-      {/* 3D Background */}
-      <div className="absolute inset-0 bg-gradient-to-b from-slate-900 via-[#0a0a1a] to-black" />
-      <div className="battle-floor" />
-
-      {/* Top Navigation */}
-      <div className="absolute top-4 left-4 right-4 z-50 flex justify-between items-start pointer-events-none">
-        <button className="glass-panel px-4 py-2 flex items-center gap-2 text-white hover:text-rose-400 transition-colors pointer-events-auto rounded-full" onClick={onExit}>
-          <ArrowLeft size={18} /> <span className="font-bold tracking-wide">FLEE</span>
-        </button>
-        
-        <div className="flex flex-col items-end gap-2">
-          <button className="glass-panel px-4 py-2 flex items-center gap-2 text-white hover:text-cyan-400 transition-colors pointer-events-auto rounded-full" onClick={onShowCalc}>
-            <Info size={18} /> <span className="font-bold tracking-wide">INFO</span>
-          </button>
-          {fieldConditions.weather && fieldConditions.weather !== 'Clear' && (
-            <div className="glass-panel px-4 py-1.5 flex items-center gap-2 rounded-full border-amber-500/30">
-              <span className="font-bold text-amber-400">{fieldConditions.weather}</span>
-              <span className="text-white/50 text-sm font-bold">{fieldConditions.weatherTurns}t</span>
-            </div>
-          )}
-          {fieldConditions.terrain && fieldConditions.terrain !== 'None' && (
-            <div className="glass-panel px-4 py-1.5 flex items-center gap-2 rounded-full border-fuchsia-500/30">
-              <span className="font-bold text-fuchsia-400">{fieldConditions.terrain} Terrain</span>
-              <span className="text-white/50 text-sm font-bold">{fieldConditions.terrainTurns}t</span>
-            </div>
-          )}
-        </div>
+    <div className={`bv-root ${arenaTint}`}>
+      {/* ---------- Arena ---------- */}
+      <div className="bv-stage" aria-hidden>
+        <div className="bv-lights" />
+        <div className="bv-crowd" />
+        <div className="bv-wall" />
+        <div className="bv-floor" />
+        <div className="bv-floor-glow" />
       </div>
 
-      {/* Sprites */}
-      <div className="absolute inset-0 z-10 pointer-events-none">
-        {/* Opponent (Top Right) */}
-        <div className="absolute top-[15%] right-[10%] flex gap-12 sm:gap-24 items-end justify-center transform scale-90 sm:scale-100 transition-all">
-          {oppActiveIndices.map((idx) => {
-            const pkmn = opponentTeamState[idx];
-            if (!pkmn || pkmn.currentHp <= 0) return null;
+      {/* ---------- Sprites ---------- */}
+      <div className="bv-field">
+        {oppSlots.map(({ idx, mon }, n) => {
+          if (mon.currentHp <= 0) return null;
+          const hit = !!activeLogMessage && activeLogMessage.text.includes(mon.nickname) && activeLogMessage.meta?.kind !== 'ability';
+          const statDrop = activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'down' && activeLogMessage.meta.id === mon.instanceId;
+          const statRaise = activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'up' && activeLogMessage.meta.id === mon.instanceId;
+          const x = oppSlots.length > 1 ? (n === 0 ? 54 : 72) : 63;
+          return (
+            <div key={`opp-${idx}`} className={`bv-mon bv-mon-opp ${hit ? 'hit' : ''} ${statDrop ? 'stat-drop' : ''} ${statRaise ? 'stat-raise' : ''}`} style={{ left: `${x}%`, top: '47%' }}>
+              <MonSprite mon={mon} className="bv-sprite" />
+              <div className="bv-shadow" />
+            </div>
+          );
+        })}
+        {mySlots.map(({ idx, i, mon }) => {
+          if (mon.currentHp <= 0) return null;
+          const isActor = canChoose && i === selectedActorIndex;
+          const hit = !!activeLogMessage && activeLogMessage.text.includes(mon.nickname) && activeLogMessage.meta?.kind !== 'ability';
+          const statDrop = activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'down' && activeLogMessage.meta.id === mon.instanceId;
+          const statRaise = activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'up' && activeLogMessage.meta.id === mon.instanceId;
+          const x = mySlots.length > 1 ? (i === 0 ? 24 : 46) : 36;
+          return (
+            <div key={`my-${idx}`} className={`bv-mon bv-mon-my ${isActor && isDoubles ? 'actor' : ''} ${hit ? 'hit' : ''} ${statDrop ? 'stat-drop' : ''} ${statRaise ? 'stat-raise' : ''}`} style={{ left: `${x}%`, top: '86%' }}>
+              <MonSprite mon={mon} back className="bv-sprite" />
+              <div className="bv-shadow" />
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ---------- Top-left controls ---------- */}
+      <div className="bv-corner">
+        <button className="bv-chip" onClick={onExit}><ArrowLeft size={16} /> Flee</button>
+        <button className="bv-chip" onClick={onShowCalc}><Info size={16} /> Calc</button>
+      </div>
+
+      {/* ---------- Opponent plates (top right) ---------- */}
+      <div className="bv-opp-hud">
+        <div className="bv-opp-plates">
+          {oppSlots.map(({ idx, mon }) => {
+            const pct = pctOf(mon);
             return (
-              <div key={`opp-${idx}`} className="relative flex flex-col items-center">
-                <img 
-                  src={pkmn.activeSpriteUrl || pkmn.species.spriteUrl} 
-                  alt={pkmn.nickname} 
-                  className={`w-36 h-36 sm:w-48 sm:h-48 object-contain filter drop-shadow-[0_15px_25px_rgba(0,0,0,0.8)] transform scale-x-[-1] transition-transform duration-300 ${activeLogMessage?.includes(pkmn.nickname) ? 'animate-bounce' : ''}`}
-                />
-                <div className="w-24 sm:w-36 h-4 sm:h-6 bg-black/60 rounded-[100%] absolute -bottom-3 sm:-bottom-4 blur-md" />
+              <div key={`op-${idx}`} className={`bv-plate bv-plate-opp ${mon.currentHp <= 0 ? 'fainted' : ''}`}>
+                <img className="bv-plate-icon" src={getSpriteUrls(mon.species.id).icon} alt="" onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }} />
+                <div className="bv-plate-body">
+                  <div className="bv-plate-name">{mon.nickname}</div>
+                  <div className="bv-hp-row">
+                    <div className="bv-hp"><div className={`bv-hp-fill ${hpBand(pct)}`} style={{ width: `${pct}%` }} /></div>
+                    <span className="bv-hp-pct">{pct}<small>%</small></span>
+                  </div>
+                </div>
               </div>
             );
           })}
         </div>
+        <div className="bv-opp-balls"><PartyBalls team={opponentTeamState} /></div>
 
-        {/* Player (Bottom Left) */}
-        <div className="absolute bottom-[35%] left-[10%] flex gap-16 sm:gap-32 items-end justify-center transform scale-110 sm:scale-125 transition-all">
-          {myActiveIndices.map((idx, i) => {
-            const pkmn = myTeamState[idx];
-            if (!pkmn || pkmn.currentHp <= 0) return null;
-            const isActor = isInputActive && i === selectedActorIndex;
+        <div className={`bv-timer ${urgent ? 'hidden' : ''}`}>
+          <span>MOVE TIME</span>
+          <b>{timeLeft}</b>
+        </div>
+        <button className={`bv-info-btn ${infoOpen ? 'on' : ''}`} onClick={() => setInfoOpen((o) => !o)}>
+          <i>X</i> Battle Info
+        </button>
+      </div>
+
+      {/* Urgent timer — center, red, unobtrusive */}
+      {urgent && <div className="bv-urgent" key={timeLeft}>{timeLeft}</div>}
+
+      {/* ---------- Battle Info panel ---------- */}
+      <div className={`bv-info ${infoOpen ? 'open' : ''}`}>
+        <h3>Battle Info</h3>
+        <section>
+          <h4>Field</h4>
+          <ul>
+            <li>
+              <span>Weather</span>
+              <b>{fieldConditions.weather && fieldConditions.weather !== 'Clear' ? `${fieldConditions.weather} · ${fieldConditions.weatherTurns ?? '–'}t` : 'None'}</b>
+            </li>
+            <li>
+              <span>Terrain</span>
+              <b>{fieldConditions.terrain && fieldConditions.terrain !== 'None' ? `${fieldConditions.terrain} · ${fieldConditions.terrainTurns ?? '–'}t` : 'None'}</b>
+            </li>
+            {(fieldConditions.trickRoom ?? 0) > 0 && <li><span>Trick Room</span><b>{fieldConditions.trickRoom}t</b></li>}
+          </ul>
+        </section>
+        <section>
+          <h4>Your side</h4>
+          <ul>
+            {sideInfo.mine.length === 0 && <li className="none">No effects</li>}
+            {sideInfo.mine.map((e) => <li key={e.label}><span>{e.label}</span><b>{e.turns}t</b></li>)}
+          </ul>
+        </section>
+        <section>
+          <h4>Opponent's side</h4>
+          <ul>
+            {sideInfo.theirs.length === 0 && <li className="none">No effects</li>}
+            {sideInfo.theirs.map((e) => <li key={e.label}><span>{e.label}</span><b>{e.turns}t</b></li>)}
+          </ul>
+        </section>
+        <section>
+          <h4>Stat changes</h4>
+          {[...mySlots.map((s) => ({ mon: s.mon, mine: true })), ...oppSlots.map((s) => ({ mon: s.mon, mine: false }))].map(({ mon, mine }) => {
+            const lines = statLines(mon);
             return (
-              <div key={`my-${idx}`} className={`relative flex flex-col items-center transition-all duration-300 ${isActor ? 'scale-110 filter drop-shadow-[0_0_20px_rgba(124,108,255,0.6)]' : ''}`}>
-                {isActor && (
-                  <div className="absolute -top-12 animate-bounce">
-                    <div className="w-0 h-0 border-l-[10px] border-r-[10px] border-t-[18px] border-l-transparent border-r-transparent border-t-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)]" />
+              <div key={mon.instanceId} className="bv-stat-block">
+                <div className={`bv-stat-name ${mine ? 'mine' : 'theirs'}`}>{mine ? '' : 'Opposing '}{mon.nickname}</div>
+                {lines.length === 0 ? <div className="none">No changes</div> : (
+                  <div className="bv-stat-chips">
+                    {lines.map(({ k, v }) => (
+                      <span key={k} className={v > 0 ? 'up' : 'down'}>{STAT_LABEL[k]} {v > 0 ? `+${v}` : v}</span>
+                    ))}
                   </div>
                 )}
-                <img 
-                  src={pkmn.activeSpriteUrl || pkmn.species.spriteUrl} 
-                  alt={pkmn.nickname} 
-                  className="w-48 h-48 sm:w-64 sm:h-64 object-contain filter drop-shadow-[0_20px_35px_rgba(0,0,0,0.8)]"
-                />
-                <div className="w-32 sm:w-48 h-5 sm:h-8 bg-black/70 rounded-[100%] absolute -bottom-4 sm:-bottom-6 blur-md" />
+              </div>
+            );
+          })}
+        </section>
+      </div>
+
+      {/* ---------- Player plates (bottom left) ---------- */}
+      <div className="bv-my-hud">
+        <PartyBalls team={myTeamState} />
+        <div className="bv-my-plates">
+          {mySlots.map(({ idx, i, mon }) => {
+            const pct = pctOf(mon);
+            const isActor = canChoose && i === selectedActorIndex;
+            return (
+              <div key={`mp-${idx}`} className={`bv-plate bv-plate-my ${isActor ? 'actor' : ''} ${mon.currentHp <= 0 ? 'fainted' : ''}`}>
+                <img className="bv-plate-icon" src={getSpriteUrls(mon.species.id).icon} alt="" onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = 'hidden'; }} />
+                <div className="bv-plate-body">
+                  <div className="bv-plate-name">{mon.nickname}</div>
+                  <div className="bv-hp"><div className={`bv-hp-fill ${hpBand(pct)}`} style={{ width: `${pct}%` }} /></div>
+                  <div className="bv-hp-num"><b>{mon.currentHp}</b><span>/{mon.maxStats.hp}</span></div>
+                </div>
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* Opponent Plates (Top Left) */}
-      <div className="absolute top-24 left-6 z-20 flex flex-col gap-4">
-        {oppActiveIndices.map((idx) => {
-          const pkmn = opponentTeamState[idx];
-          if (!pkmn) return null;
-          const pct = Math.max(0, Math.round((pkmn.currentHp / pkmn.maxStats.hp) * 100));
-          const fainted = pkmn.currentHp <= 0;
-          return (
-            <div key={`opp-plate-${idx}`} className={`plate-glass plate-opp w-64 sm:w-80 transition-all ${fainted ? 'opacity-40 grayscale' : ''}`}>
-              <div className="flex justify-between items-end mb-2">
-                <span className="font-bold text-white text-lg truncate drop-shadow-md">{pkmn.nickname}</span>
-                <span className="text-slate-300 font-bold text-xs bg-black/40 px-2 py-0.5 rounded-md border border-white/10">Lv.{pkmn.level}</span>
-              </div>
-              <div className="w-full bg-slate-950 rounded-full h-3.5 overflow-hidden shadow-inner p-[1px] border border-slate-800">
-                <div className="h-full rounded-full transition-all duration-500 ease-out" style={{ width: `${pct}%`, backgroundColor: hpColor(pct) }} />
-              </div>
+      {/* ---------- Message blurb & Ability Banner ---------- */}
+      {activeLogMessage?.meta?.kind === 'ability' ? (() => {
+        const triggerMon = [...mySlots, ...oppSlots].map(s => s.mon).find(m => m.instanceId === activeLogMessage.meta?.id);
+        const isMine = triggerMon ? mySlots.some(s => s.mon.instanceId === triggerMon.instanceId) : false;
+        return (
+          <div className={`bv-ability-banner ${isMine ? 'mine' : 'theirs'}`} key={activeLogMessage.text}>
+            {triggerMon && <img src={getSpriteUrls(triggerMon.species.id).icon} alt="" className="bv-ability-icon" />}
+            <div className="bv-ability-text">
+              <span className="bv-ability-name">{triggerMon?.nickname}'s</span>
+              <span className="bv-ability-ability">{(triggerMon?.ability || activeLogMessage.text).replace(new RegExp(`^${triggerMon?.nickname}[']s `, 'i'), '')}</span>
             </div>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })() : null}
 
-      {/* Player Plates (Bottom Right - Above HUD) */}
-      <div className="absolute bottom-[160px] right-6 z-20 flex flex-col gap-4 items-end">
-        {myActiveIndices.map((idx, i) => {
-          const pkmn = myTeamState[idx];
-          if (!pkmn) return null;
-          const pct = Math.max(0, Math.round((pkmn.currentHp / pkmn.maxStats.hp) * 100));
-          const isActor = isInputActive && i === selectedActorIndex;
-          const fainted = pkmn.currentHp <= 0;
-          return (
-            <div key={`my-plate-${idx}`} className={`plate-glass plate-my w-72 sm:w-[360px] transition-all duration-300 ${isActor ? 'scale-105 border-r-cyan-400 bg-cyan-900/20' : ''} ${fainted ? 'opacity-40 grayscale' : ''}`}>
-              <div className="flex justify-between items-end mb-2">
-                <span className="font-bold text-white text-xl truncate drop-shadow-md">{pkmn.nickname}</span>
-                <span className="text-white font-bold text-sm bg-black/60 px-3 py-1 rounded-md border border-white/20 tracking-wider shadow-inner">{pkmn.currentHp}/{pkmn.maxStats.hp}</span>
-              </div>
-              <div className="w-full bg-slate-950 rounded-full h-4 overflow-hidden shadow-inner p-[2px] border border-slate-800">
-                <div className="h-full rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_currentColor]" style={{ width: `${pct}%`, backgroundColor: hpColor(pct), color: hpColor(pct) }} />
-              </div>
-              {Object.entries(pkmn.statStages || {}).some(([, val]) => val !== 0) && (
-                <div className="flex gap-1.5 mt-2 justify-end">
-                  {Object.entries(pkmn.statStages).map(([stat, val]) => {
-                    if (!val) return null;
-                    return <span key={stat} className={`w-2.5 h-2.5 rounded-full shadow-sm ${val > 0 ? 'bg-cyan-400 shadow-cyan-500/50' : 'bg-rose-400 shadow-rose-500/50'}`} title={`${stat} ${val}`} />
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Unified Bottom HUD */}
-      <div className="hud-bottom h-[140px]">
-        {/* Log Area */}
-        <div className="hud-log">
-          <p className="hud-log-text animate-in fade-in zoom-in duration-300" key={getLogDisplay()}>{getLogDisplay()}</p>
+      {logText && activeLogMessage?.meta?.kind !== 'ability' && (
+        <div className="bv-blurb" key={logText}>
+          <p>{logText}</p>
         </div>
+      )}
 
-        {/* Action Area */}
-        {isInputActive && !targetModalMove && currentActorPkmn && (
-          <div className="w-[45%] lg:w-[40%] flex gap-4 h-full animate-in slide-in-from-right-8 duration-300">
-            {viewState === 'MAIN' && (
-              <div className="hud-actions w-full relative">
-                {currentActorPkmn.species.megaForm && (
-                  <button onClick={onToggleMega} className={`absolute -top-12 right-0 z-50 glass-panel px-4 py-1.5 rounded-full font-bold text-sm tracking-widest transition-all ${isMegaChecked ? 'bg-cyan-500/30 text-cyan-200 border-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.5)]' : 'text-slate-400 hover:text-white'}`}>
-                    {isMegaChecked ? 'MEGA EVOLVING' : 'MEGA EVOLVE'}
-                  </button>
-                )}
-                {selectedActorIndex > 0 && (
-                  <button onClick={onUndoAction} className="btn-battle-action w-[80px]" style={{ fontSize: '14px' }}>
-                    <ChevronLeft size={28} />
-                    <span>BACK</span>
-                  </button>
-                )}
-                <button onClick={() => setViewState('FIGHT')} className="btn-battle-action btn-fight flex-1">
-                  <Swords size={32} />
-                  <span>FIGHT</span>
+      {/* ---------- Command area (bottom right) ---------- */}
+      {canChoose && currentActorPkmn && (
+        <div className="bv-commands">
+          {panel === 'MAIN' && (
+            <>
+              {currentActorPkmn.species.megaForm && (
+                <button onClick={onToggleMega} className={`bv-mega ${isMegaChecked ? 'on' : ''}`}>
+                  {isMegaChecked ? 'Mega Evolving' : 'Mega Evolve'}
                 </button>
-                <button onClick={() => setViewState('POKEMON')} className="btn-battle-action btn-pokemon flex-1">
-                  <Package size={32} />
-                  <span>POKÉMON</span>
+              )}
+              {selectedActorIndex > 0 && (
+                <button onClick={onUndoAction} className="bv-back"><ArrowLeft size={16} /> Back</button>
+              )}
+              <div className="bv-cmd-stack">
+                <button className="bv-cmd bv-cmd-fight" onClick={() => setPanel('FIGHT')}>
+                  <FightGlyph />
+                  <span>Fight</span>
+                </button>
+                <button className="bv-cmd bv-cmd-poke" onClick={() => setPanel('POKEMON')}>
+                  <PokeballIcon size={54} />
+                  <span>Pokémon</span>
                 </button>
               </div>
-            )}
+            </>
+          )}
 
-            {viewState === 'FIGHT' && (
-              <div className="glass-panel w-full p-3 flex flex-col animate-in fade-in slide-in-from-bottom-4 relative">
-                <button onClick={() => setViewState('MAIN')} className="absolute -top-3 -left-3 bg-slate-800 border border-white/20 rounded-full p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 z-10 transition-colors">
-                  <ArrowLeft size={16} />
+          {panel === 'FIGHT' && (
+            <div className="bv-moves">
+              <button className="bv-moves-close" onClick={() => setPanel('MAIN')}><ArrowLeft size={16} /> Back</button>
+              {currentActorPkmn.moves.map(({ move, currentPp }) => (
+                <button
+                  key={move.id}
+                  className="bv-move"
+                  disabled={currentPp <= 0}
+                  onClick={() => onSelectMove(move)}
+                  style={{ ['--tc' as string]: TYPE_COLORS[move.type] || '#888' }}
+                >
+                  <TypeBadge type={move.type} size={32} />
+                  <span className="bv-move-name">{move.name}</span>
+                  <span className="bv-move-pp"><b>{currentPp}</b>/{move.maxPp}</span>
                 </button>
-                <div className="moves-grid">
-                  {currentActorPkmn.moves.map(({ move, currentPp }) => (
-                    <button key={move.id} onClick={() => onSelectMove(move)} disabled={currentPp <= 0} className="move-btn">
-                      <div className="move-type-strip" style={{ backgroundColor: TYPE_COLORS[move.type] || '#ccc' }} />
-                      <div className="pl-2">
-                        <div className="move-name">{move.name}</div>
-                        <div className="move-meta mt-1">
-                          <span className="px-2 py-0.5 rounded text-[10px] text-white" style={{ backgroundColor: TYPE_COLORS[move.type] || '#ccc' }}>{move.type.toUpperCase()}</span>
-                          <span className="move-pp">{currentPp}/{move.maxPp} PP</span>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {viewState === 'POKEMON' && (
-              <div className="glass-panel w-full p-3 flex flex-col animate-in fade-in slide-in-from-bottom-4 relative overflow-y-auto overflow-x-hidden">
-                <button onClick={() => setViewState('MAIN')} className="absolute top-2 right-3 text-slate-400 hover:text-white transition-colors z-20">
-                  <ArrowLeft size={20} />
-                </button>
-                <div className="grid grid-cols-2 gap-2 mt-1">
-                  {myTeamState.map((pkmn, idx) => {
-                    const isActive = myActiveIndices.includes(idx);
-                    const isFainted = pkmn.currentHp <= 0;
-                    const hpPct = Math.round((pkmn.currentHp / pkmn.maxStats.hp) * 100);
-                    return (
-                      <button key={pkmn.instanceId} onClick={() => onSelectSwitch(idx)} disabled={isActive || isFainted} className="bg-slate-800/80 hover:bg-emerald-900/60 border border-slate-600/50 hover:border-emerald-400 rounded-xl p-2 flex items-center gap-3 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                        <img src={pkmn.activeSpriteUrl || pkmn.species.spriteUrl} alt={pkmn.nickname} className="w-10 h-10 object-contain drop-shadow-md" />
-                        <div className="flex-1 min-w-0 text-left">
-                          <div className="text-white font-bold text-xs truncate">{pkmn.nickname}</div>
-                          <div className="w-full bg-slate-950 h-1.5 rounded-full mt-1.5 border border-slate-800">
-                            <div className="h-full rounded-full shadow-[0_0_5px_currentColor]" style={{ width: `${hpPct}%`, backgroundColor: hpColor(hpPct), color: hpColor(hpPct) }} />
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Target Selection View */}
-        {targetModalMove && (
-          <div className="w-[45%] lg:w-[40%] flex gap-4 h-full animate-in slide-in-from-right-8 duration-300">
-            <div className="glass-panel w-full p-3 flex flex-col relative justify-center">
-              <button onClick={onCancelTarget} className="absolute -top-3 -left-3 bg-slate-800 border border-white/20 rounded-full p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 z-10 transition-colors">
-                <ArrowLeft size={16} />
-              </button>
-              <div className="grid grid-cols-2 gap-3 px-2">
-                {oppActiveIndices.map((idx, slot) => {
-                  const oppPkmn = opponentTeamState[idx];
-                  if (!oppPkmn || oppPkmn.currentHp <= 0) return null;
-                  return (
-                    <button key={`target-${idx}`} onClick={() => onTargetConfirm(slot)} className="bg-slate-800/60 hover:bg-indigo-900/60 border border-slate-600/50 hover:border-indigo-400 rounded-2xl p-3 flex flex-col items-center gap-2 transition-all hover:scale-105 hover:shadow-[0_0_20px_rgba(99,102,241,0.4)]">
-                      <Target size={24} className="absolute top-2 right-2 text-indigo-400 opacity-50" />
-                      <img src={oppPkmn.activeSpriteUrl || oppPkmn.species.spriteUrl} alt={oppPkmn.nickname} className="w-14 h-14 object-contain filter drop-shadow-lg" />
-                      <span className="text-white font-bold text-sm tracking-wide">{oppPkmn.nickname}</span>
-                    </button>
-                  );
-                })}
-              </div>
+              ))}
             </div>
-          </div>
-        )}
-      </div>
+          )}
+
+        </div>
+      )}
+
+      {/* ---------- Switch / summary screen ---------- */}
+      {panel === 'POKEMON' && (
+        <SwitchScreen
+          myTeamState={myTeamState}
+          myActiveIndices={myActiveIndices}
+          opponentTeamState={opponentTeamState}
+          revealedOppIds={revealedOppIds}
+          opponentName={opponentName}
+          timeLeft={timeLeft}
+          canSwitch={canChoose}
+          onSelectSwitch={(idx) => { setPanel('MAIN'); onSelectSwitch(idx); }}
+          onBack={() => setPanel('MAIN')}
+        />
+      )}
+
+      {/* ---------- Target selection ---------- */}
+      {targetModalMove && (
+        <div className="bv-targets">
+          <button className="bv-moves-close" onClick={onCancelTarget}><ArrowLeft size={16} /> Back</button>
+          {oppActiveIndices.map((idx, slot) => {
+            const m = opponentTeamState[idx];
+            if (!m || m.currentHp <= 0) return null;
+            return (
+              <button key={`t-${idx}`} className="bv-target" onClick={() => onTargetConfirm(slot)}>
+                <img src={getSpriteUrls(m.species.id).icon} alt="" />
+                <span>{m.nickname}</span>
+                <b>{pctOf(m)}%</b>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

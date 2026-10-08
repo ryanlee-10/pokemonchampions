@@ -4,7 +4,7 @@ import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { NATURES } from '../data/natures';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
-import { Dumbbell, ArrowLeft, Check, Sparkles, Search } from 'lucide-react';
+import { Dumbbell, ArrowLeft, Check, Sparkles, Search, ArrowUp, ArrowDown } from 'lucide-react';
 
 interface TrainingScreenProps {
   pokemonList: CustomPokemon[];
@@ -274,10 +274,17 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
                     const evVal = activePkmn.evs[statKey];
                     const finalVal = calculatedStats ? calculatedStats[statKey] : 0;
                     const baseVal = species.baseStats[statKey];
+                    const currentNature = NATURES.find(n => n.name === activePkmn.nature);
+                    const isPlus = currentNature?.plus === statKey;
+                    const isMinus = currentNature?.minus === statKey;
 
                     return (
                       <div key={statKey} style={{ display: 'grid', gridTemplateColumns: '1fr 0.5fr 2fr 1fr', gap: '1rem', alignItems: 'center', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 'var(--radius-md)' }}>
-                        <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>{STAT_LABELS[statKey]}</span>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          {STAT_LABELS[statKey]}
+                          {isPlus && <ArrowUp size={14} color="#f43f5e" title="Boosted by Nature" />}
+                          {isMinus && <ArrowDown size={14} color="#3b82f6" title="Reduced by Nature" />}
+                        </span>
                         <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{baseVal}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                           <input

@@ -11,6 +11,7 @@ import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
 import { resolveTurnCore, checkEntranceAbilities } from '../engine/battleEngine';
+import type { LogMeta } from '../engine/battleEngine';
 import { peerManager } from '../network/peerManager';
 import type { NetworkMessage } from '../network/peerManager';
 import { generateRandomCpuTeam } from '../utils/showdownParser';
@@ -204,11 +205,11 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const [selectedActorIndex, setSelectedActorIndex] = useState<number>(0);
   const [pendingActions, setPendingActions] = useState<BattleAction[]>([]);
   const [targetModalMove, setTargetModalMove] = useState<Move | null>(null);
-  const [battleLog, setBattleLog] = useState<string[]>([
-    `Battle started in ${format} format! Choose your moves.`
+  const [battleLog, setBattleLog] = useState<{ text: string; meta?: LogMeta }[]>([
+    { text: `Battle started in ${format} format! Choose your moves.` }
   ]);
-  const [activeLogMessage, setActiveLogMessage] = useState<string | null>(null);
-  const logQueue = useRef<string[]>([]);
+  const [activeLogMessage, setActiveLogMessage] = useState<{ text: string; meta?: LogMeta } | null>(null);
+  const logQueue = useRef<{ text: string; meta?: LogMeta }[]>([]);
   const isPlayingLogs = useRef<boolean>(false);
 
   const processLogQueue = async () => {
@@ -226,8 +227,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     isPlayingLogs.current = false;
   };
 
-  const addLog = (text: string) => {
-    logQueue.current.push(text);
+  const addLog = (text: string, meta?: LogMeta) => {
+    logQueue.current.push({ text, meta });
     processLogQueue();
   };
 
@@ -238,6 +239,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
 
   const [isMegaChecked, setIsMegaChecked] = useState<boolean>(false);
+  const [turn, setTurn] = useState<number>(0);
 
 
 
@@ -296,7 +298,34 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   };
 
   const submitAction = (action: BattleAction) => {
-    const updated = [...pendingActions, action];
+    finalizeActions([...pendingActions, action]);
+  };
+
+  /** Move timer expired: auto-pick a random usable move for every undecided Pokémon. */
+  const handleTimeout = () => {
+    setTargetModalMove(null);
+    const filled = [...pendingActions];
+    for (let slot = filled.length; slot < alivePlayerActiveIndices.length; slot++) {
+      const mon = myTeamState[myActiveIndices[slot]];
+      if (!mon) continue;
+      const usable = mon.moves.filter((m) => m.currentPp > 0);
+      const pick = (usable.length > 0 ? usable : mon.moves)[Math.floor(Math.random() * (usable.length > 0 ? usable.length : mon.moves.length))];
+      const targetSlot = aliveOppActiveIndices.length > 0
+        ? Math.max(0, oppActiveIndices.indexOf(aliveOppActiveIndices[Math.floor(Math.random() * aliveOppActiveIndices.length)]))
+        : 0;
+      filled.push({
+        playerId: isHost ? 'host' : 'guest',
+        actorIndex: slot,
+        type: 'MOVE',
+        moveId: pick.move.id,
+        targetSlot,
+      });
+    }
+    setIsMegaChecked(false);
+    finalizeActions(filled);
+  };
+
+  const finalizeActions = (updated: BattleAction[]) => {
     setPendingActions(updated);
 
     // Check if all active living slots have actions selected
@@ -357,6 +386,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
 
   const executeAuthoritativeTurn = (hostActs: BattleAction[], guestActs: BattleAction[]) => {
+    setTurn((t) => t + 1);
     setIsTurnProcessing(true);
     const turnResult = resolveTurnCore(
       hostActs,
@@ -387,7 +417,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     setMyActiveIndices(turnResult.nextHostActive);
     setOppActiveIndices(turnResult.nextGuestActive);
     if (turnResult.winner) setWinner(turnResult.winner);
-    turnResult.turnLogs.forEach(addLog);
+    turnResult.turnLogs.forEach(l => addLog(l.text, l.meta));
 
     hostPendingActionsRef.current = null;
     guestPendingActionsRef.current = null;
@@ -398,6 +428,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   };
 
   const handleIncomingGameStateUpdate = (payload: any) => {
+    setTurn((t) => t + 1);
     setMyTeamState(payload.guestTeam);
     setOpponentTeamState(payload.hostTeam);
     setFieldConditions(payload.fieldConditions);
@@ -409,7 +440,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       else setWinner(payload.winner);
     }
     if (payload.logs && Array.isArray(payload.logs)) {
-      payload.logs.forEach(addLog);
+      payload.logs.forEach((l: any) => {
+        if (typeof l === 'string') addLog(l);
+        else addLog(l.text, l.meta);
+      });
     }
 
     setPendingActions([]);
@@ -450,6 +484,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   }, [roomId, isHost]);
 
   const resolveSoloTurn = (myActs: BattleAction[], aiActs: BattleAction[]) => {
+    setTurn((t) => t + 1);
     setIsTurnProcessing(true);
     const turnResult = resolveTurnCore(
       myActs,
@@ -468,7 +503,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     setMyActiveIndices(turnResult.nextHostActive);
     setOppActiveIndices(turnResult.nextGuestActive);
     if (turnResult.winner) setWinner(turnResult.winner);
-    turnResult.turnLogs.forEach(addLog);
+    turnResult.turnLogs.forEach(l => addLog(l.text, l.meta));
 
     setPendingActions([]);
     setSelectedActorIndex(0);
@@ -544,6 +579,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       <BattleView
         format={format}
         roomId={roomId}
+        isHost={isHost}
+        opponentName={opponentName}
+        turn={turn}
+        onTimeout={handleTimeout}
         myTeamState={myTeamState}
         opponentTeamState={opponentTeamState}
         myActiveIndices={myActiveIndices}

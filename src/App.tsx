@@ -58,11 +58,18 @@ export function App() {
   });
   const [activeTeamIdx, setActiveTeamIdx] = useState(0);
   const [pcBox, setPcBox] = useState<CustomPokemon[]>(() => {
+    const teamIds = ['pawmot', 'absol', 'politoed', 'excadrill', 'volcarona', 'maushold'];
     const saved = localStorage.getItem('zenith_pcbox');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error('Failed to parse saved PC Box'); }
+      try { 
+        let parsed: CustomPokemon[] = JSON.parse(saved); 
+        if (parsed.length === POKEMON_ROSTER.length) {
+          parsed = parsed.filter(p => !teamIds.includes(p.speciesId));
+        }
+        return parsed;
+      } catch (e) { console.error('Failed to parse saved PC Box'); }
     }
-    return POKEMON_ROSTER.map((p) => createStarterPokemon(p.id));
+    return POKEMON_ROSTER.filter(p => !teamIds.includes(p.id)).map((p) => createStarterPokemon(p.id));
   });
   const [isHost, setIsHost] = useState(true);
   const [roomId, setRoomId] = useState('LOCAL_SOLO');
@@ -181,6 +188,7 @@ export function App() {
                     playerTeam={activeTeam}
                     isHost={isHost}
                     roomId={roomId}
+                    onRematch={() => {}}
                     onExit={() => setScreen('MAIN_MENU')}
                   />
                 )}

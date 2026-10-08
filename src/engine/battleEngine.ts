@@ -1,7 +1,97 @@
-import type { ActivePokemonState, BattleAction, BattleFieldConditions } from '../types/pokemon';
+import type { ActivePokemonState, BattleAction, BattleFieldConditions, BattleFormat } from '../types/pokemon';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from './statCalc';
-import { calculateDamage, isGrounded } from './damageCalc';
+import { calculateDamage, isGrounded, INTIMIDATE_IMMUNE } from './damageCalc';
+
+export type LogMeta = {
+  kind?: 'damage' | 'heal' | 'status' | 'stat' | 'faint' | 'ability' | 'field' | 'switch';
+  id?: string;
+  amount?: number;
+  stat?: string;
+  dir?: 'up' | 'down';
+  field?: any;
+};
+
+export type Logger = (msg: string, meta?: LogMeta) => void;
+
+export const checkEntranceAbilities = (
+  enteringMon: ActivePokemonState,
+  currentFields: BattleFieldConditions,
+  logger: Logger,
+  foes?: ActivePokemonState[]
+): BattleFieldConditions => {
+  const updated = { ...currentFields };
+  const ab = enteringMon.ability;
+  const announce = () =>
+    logger(`${enteringMon.nickname}'s ${ab}`, { kind: 'ability', id: enteringMon.instanceId, field: { ...updated } });
+  const effect = (text: string) => logger(text, { kind: 'field', field: { ...updated } });
+  if (ab === 'Grassy Surge') {
+    updated.terrain = 'Grassy';
+    updated.terrainTurns = 5;
+    announce();
+    effect('Grass grew to cover the battlefield!');
+  } else if (ab === 'Psychic Surge') {
+    updated.terrain = 'Psychic';
+    updated.terrainTurns = 5;
+    announce();
+    effect('The battlefield got weird!');
+  } else if (ab === 'Electric Surge' || ab === 'Hadron Engine') {
+    updated.terrain = 'Electric';
+    updated.terrainTurns = 5;
+    announce();
+    effect('An electric current ran across the battlefield!');
+  } else if (ab === 'Misty Surge') {
+    updated.terrain = 'Misty';
+    updated.terrainTurns = 5;
+    announce();
+    effect('Mist swirled about the battlefield!');
+  } else if (ab === 'Drought') {
+    updated.weather = 'Sun';
+    updated.weatherTurns = 5;
+    announce();
+    effect('The sunlight turned harsh!');
+  } else if (ab === 'Drizzle') {
+    updated.weather = 'Rain';
+    updated.weatherTurns = 5;
+    announce();
+    effect('It started to rain!');
+  } else if (ab === 'Sand Stream') {
+    updated.weather = 'Sandstorm';
+    updated.weatherTurns = 5;
+    announce();
+    effect('A sandstorm kicked up!');
+  } else if (ab === 'Snow Warning') {
+    updated.weather = 'Snow';
+    updated.weatherTurns = 5;
+    announce();
+    effect('It started to snow!');
+  } else if (ab === 'Intimidate') {
+    announce();
+    (foes || [])
+      .filter((f) => f && !f.isFainted && f.currentHp > 0)
+      .forEach((foe) => {
+        if (INTIMIDATE_IMMUNE.includes(foe.ability)) {
+          logger(`${foe.nickname}'s ${foe.ability} prevents Attack loss!`, { kind: 'ability', id: foe.instanceId });
+          return;
+        }
+        const cur = foe.statStages.attack || 0;
+        if (cur <= -6) {
+          logger(`${foe.nickname}'s Attack won't go any lower!`, { kind: 'stat', id: foe.instanceId });
+          return;
+        }
+        foe.statStages.attack = cur - 1;
+        logger(`${foe.nickname}'s Attack dropped by 1 stage!`, { kind: 'stat', id: foe.instanceId, dir: 'down', stat: 'attack' });
+        if (foe.ability === 'Defiant') {
+          foe.statStages.attack = Math.min(6, foe.statStages.attack + 2);
+          logger(`${foe.nickname}'s Defiant sharply raised its Attack!`, { kind: 'stat', id: foe.instanceId, dir: 'up', stat: 'attack' });
+        } else if (foe.ability === 'Competitive') {
+          foe.statStages.spAtk = Math.min(6, (foe.statStages.spAtk || 0) + 2);
+          logger(`${foe.nickname}'s Competitive sharply raised its Sp. Atk!`, { kind: 'stat', id: foe.instanceId, dir: 'up', stat: 'spAtk' });
+        }
+      });
+  }
+  return updated;
+};
 
 export const resolveTurnCore = (
 
@@ -11,11 +101,12 @@ export const resolveTurnCore = (
     currentGuestTeam: ActivePokemonState[],
     currentField: BattleFieldConditions,
     hostActiveSlots: number[],
-    guestActiveSlots: number[]
+    guestActiveSlots: number[],
+    format: BattleFormat
   ) => {
-    const turnLogs: string[] = [];
-    const pushLog = (txt: string) => {
-      turnLogs.push(txt);
+    const turnLogs: { text: string; meta?: LogMeta }[] = [];
+    const pushLog = (txt: string, meta?: LogMeta) => {
+      turnLogs.push({ text: txt, meta });
     };
 
     // Deep clone team states and field
@@ -174,7 +265,7 @@ export const resolveTurnCore = (
         if (newPkmn && newPkmn.currentHp > 0) {
           pushLog(`🔄 ${attacker.nickname} withdrew! Go! ${newPkmn.nickname}!`);
           attackerActiveIndices[action.actorIndex] = action.switchToTeamIndex;
-          attacker.statStages = { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0, accuracy: 0, evasion: 0, hp: 0 };
+          attacker.statStages = { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0, accuracy: 0, evasion: 0 };
         }
         return;
       }
@@ -401,7 +492,7 @@ export const resolveTurnCore = (
                     const direction = sc.stages > 0 ? 'rose' : 'fell';
                     const amountText = Math.abs(sc.stages) > 1 ? ` sharply!` : '!';
                     const statNameFormatted = statKey === 'spAtk' ? 'Sp. Atk' : statKey === 'spDef' ? 'Sp. Def' : statKey.charAt(0).toUpperCase() + statKey.slice(1);
-                    pushLog(`${targetPkmn.nickname}'s ${statNameFormatted} ${direction}${amountText}`);
+                    pushLog(`${targetPkmn.nickname}'s ${statNameFormatted} ${direction}${amountText}`, { kind: 'stat', id: targetPkmn.instanceId, dir: sc.stages > 0 ? 'up' : 'down' });
                   }
                 }
               }
