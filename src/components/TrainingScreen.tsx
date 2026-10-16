@@ -68,10 +68,39 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
   };
 
   const handleMoveChange = (moveIndex: number, moveId: string) => {
-    if (!activePkmn) return;
-    const newMoves = [...activePkmn.moves];
-    newMoves[moveIndex] = moveId;
-    handleFieldChange('moves', newMoves);
+    if (!activePkmn || !species) return;
+    const currentMoves = [...(activePkmn.moves || [])].slice(0, 4);
+    while (currentMoves.length < 4) currentMoves.push('');
+
+    // If moveId is chosen and already present in another slot, swap them
+    const existingIndex = currentMoves.findIndex((m, i) => m === moveId && i !== moveIndex);
+    if (existingIndex !== -1 && moveId) {
+      currentMoves[existingIndex] = currentMoves[moveIndex] || '';
+    }
+    currentMoves[moveIndex] = moveId;
+
+    // Deduplicate non-empty
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const m of currentMoves) {
+      if (m && !seen.has(m) && species.learnset.includes(m)) {
+        seen.add(m);
+        unique.push(m);
+      }
+    }
+
+    // Fill up to 4 unique moves from species learnset
+    if (unique.length < 4) {
+      for (const learnable of species.learnset) {
+        if (!seen.has(learnable) && MOVES_DATABASE[learnable]) {
+          seen.add(learnable);
+          unique.push(learnable);
+          if (unique.length >= 4) break;
+        }
+      }
+    }
+
+    handleFieldChange('moves', unique.slice(0, 4));
   };
 
   return (
@@ -226,9 +255,12 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
                         <option value="">-- Select Move --</option>
                         {species.learnset.map((mId) => {
                           const mObj = MOVES_DATABASE[mId];
+                          const otherSlot = activePkmn.moves.findIndex((m, i) => m === mId && i !== mIdx);
+                          const isOther = otherSlot !== -1;
+                          const suffix = isOther ? ` [Slot ${otherSlot + 1}]` : '';
                           return (
                             <option key={mId} value={mId}>
-                              {mObj ? `${mObj.name} (${mObj.type} ${mObj.power ? mObj.power + ' BP' : 'Status'})` : mId}
+                              {mObj ? `${mObj.name} (${mObj.type} ${mObj.power ? mObj.power + ' BP' : 'Status'})${suffix}` : mId}
                             </option>
                           );
                         })}
@@ -282,8 +314,8 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
                       <div key={statKey} style={{ display: 'grid', gridTemplateColumns: '1fr 0.5fr 2fr 1fr', gap: '1rem', alignItems: 'center', padding: '0.5rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 'var(--radius-md)' }}>
                         <span style={{ fontSize: '0.85rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                           {STAT_LABELS[statKey]}
-                          {isPlus && <ArrowUp size={14} color="#f43f5e" title="Boosted by Nature" />}
-                          {isMinus && <ArrowDown size={14} color="#3b82f6" title="Reduced by Nature" />}
+                          {isPlus && <span title="Boosted by Nature"><ArrowUp size={14} color="#f43f5e" /></span>}
+                          {isMinus && <span title="Reduced by Nature"><ArrowDown size={14} color="#3b82f6" /></span>}
                         </span>
                         <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{baseVal}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -294,7 +326,8 @@ export const TrainingScreen: React.FC<TrainingScreenProps> = ({
                             step="1"
                             value={evVal}
                             onChange={(e) => handleEvChange(statKey, parseInt(e.target.value))}
-                            style={{ flex: 1, accentColor: 'var(--primary)' }}
+                            className="ev-range-slider"
+                            style={{ flex: 1, ['--fill-pct' as any]: `${(evVal / 32) * 100}%` }}
                           />
                           <input
                             type="number"

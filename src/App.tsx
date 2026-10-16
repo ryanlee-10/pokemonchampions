@@ -17,11 +17,13 @@ import { CpuSetup } from './screens/CpuSetup';
 import { ProfileScreen } from './screens/ProfileScreen';
 import { TeambuilderHub } from './screens/TeambuilderHub';
 import type { TeambuilderTab } from './screens/TeambuilderHub';
+import { sanitizePokemonMoves, sanitizeTeam } from './utils/sanitizePokemon';
 import './styles/zenith.css';
 
 function createStarterPokemon(speciesId: string): CustomPokemon {
   const spec = POKEMON_ROSTER.find((s) => s.id === speciesId) || POKEMON_ROSTER[0];
-  return {
+  const initialMoves = Array.from(new Set(spec.learnset)).slice(0, 4);
+  return sanitizePokemonMoves({
     id: `pkmn_init_${spec.id}_${Math.random().toString(36).substring(2, 7)}`,
     speciesId: spec.id,
     nickname: spec.name,
@@ -30,8 +32,8 @@ function createStarterPokemon(speciesId: string): CustomPokemon {
     ability: spec.abilities[0] || 'Overgrow',
     nature: 'Adamant',
     evs: { hp: 32, attack: 32, defense: 2, spAtk: 0, spDef: 0, speed: 0 },
-    moves: spec.learnset.slice(0, 4),
-  };
+    moves: initialMoves,
+  });
 }
 
 type Phase = 'INTRO' | 'PREMENU' | 'APP';
@@ -46,7 +48,10 @@ export function App() {
   const [teams, setTeams] = useState<PlayerTeam[]>(() => {
     const saved = localStorage.getItem('zenith_teams');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) { console.error('Failed to parse saved teams'); }
+      try {
+        const parsed: PlayerTeam[] = JSON.parse(saved);
+        return parsed.map((t) => ({ ...t, pokemon: sanitizeTeam(t.pokemon || []) }));
+      } catch (e) { console.error('Failed to parse saved teams'); }
     }
     return [
       {
@@ -66,10 +71,10 @@ export function App() {
         if (parsed.length === POKEMON_ROSTER.length) {
           parsed = parsed.filter(p => !teamIds.includes(p.speciesId));
         }
-        return parsed;
+        return sanitizeTeam(parsed);
       } catch (e) { console.error('Failed to parse saved PC Box'); }
     }
-    return POKEMON_ROSTER.filter(p => !teamIds.includes(p.id)).map((p) => createStarterPokemon(p.id));
+    return sanitizeTeam(POKEMON_ROSTER.filter(p => !teamIds.includes(p.id)).map((p) => createStarterPokemon(p.id)));
   });
   const [isHost, setIsHost] = useState(true);
   const [roomId, setRoomId] = useState('LOCAL_SOLO');

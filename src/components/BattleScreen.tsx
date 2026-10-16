@@ -10,11 +10,12 @@ import type {
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
-import { resolveTurnCore, checkEntranceAbilities } from '../engine/battleEngine';
+import { resolveTurnCore, checkEntranceAbilities, applyEntranceHazards } from '../engine/battleEngine';
 import type { LogMeta } from '../engine/battleEngine';
 import { peerManager } from '../network/peerManager';
 import type { NetworkMessage } from '../network/peerManager';
 import { generateRandomCpuTeam } from '../utils/showdownParser';
+import { sanitizePokemonMoves } from '../utils/sanitizePokemon';
 import { BattleCalculator } from './BattleCalculator';
 
 import { TeamPreview } from '../battle/TeamPreview';
@@ -42,9 +43,10 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   onExit,
   opponentName
 }) => {
-  // Convert custom team to initial active state
-  const initializeTeamState = (team: CustomPokemon[], prefix = ''): ActivePokemonState[] => {
-    return team.map((p) => {
+  // Convert custom team to initial active state with strict move sanitization (max 4, no duplicates)
+  const initializeTeamState = (team: CustomPokemon[], prefix = '', activeCount = 2): ActivePokemonState[] => {
+    return team.map((rawP, index) => {
+      const p = sanitizePokemonMoves(rawP);
       const spec = POKEMON_ROSTER.find((s) => s.id === p.speciesId)!;
       const stats = calculateAllStats(p, spec);
       return {
@@ -59,7 +61,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         originalEvs: p.evs,
         originalNature: p.nature,
         statStages: { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0, accuracy: 0, evasion: 0 },
-        moves: p.moves.map((mId) => {
+        moves: p.moves.slice(0, 4).map((mId) => {
           const moveObj = MOVES_DATABASE[mId] || MOVES_DATABASE['protect'];
           return {
             move: moveObj,
@@ -67,7 +69,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
           };
         }),
         isFainted: false,
-        turnsOnField: 1,
+        turnsOnField: index < activeCount ? 1 : 0,
         activeSpriteUrl: spec.spriteUrl
       };
     });
@@ -89,11 +91,19 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   };
 
   const [myTeamState, setMyTeamState] = useState<ActivePokemonState[]>(() =>
-    initializeTeamState(playerTeam.length > 0 ? playerTeam.slice(0, requiredPicks) : generateRandomCpuTeam().slice(0, requiredPicks))
+    initializeTeamState(
+      playerTeam.length > 0 ? playerTeam.slice(0, requiredPicks) : generateRandomCpuTeam().slice(0, requiredPicks),
+      'my_',
+      format === 'Singles' ? 1 : 2
+    )
   );
 
   const [opponentTeamState, setOpponentTeamState] = useState<ActivePokemonState[]>(() =>
-    initializeTeamState(generateRandomCpuTeam().slice(0, requiredPicks))
+    initializeTeamState(
+      generateRandomCpuTeam().slice(0, requiredPicks),
+      'opp_',
+      format === 'Singles' ? 1 : 2
+    )
   );
 
   // Active slots indices: Singles uses 1 slot (0), Doubles uses 2 slots (0, 1)
@@ -131,40 +141,85 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const [isWaitingForOpponentTurn, setIsWaitingForOpponentTurn] = useState<boolean>(false);
 
   const startBattleWithTeams = (myMons: CustomPokemon[], oppMons: CustomPokemon[]) => {
-    const [myPrefix, oppPrefix] = isHost ? ['A_', 'B_'] : ['B_', 'A_'];
-    const initMyTeam = initializeTeamState(myMons, myPrefix);
-    const initOppTeam = initializeTeamState(oppMons, oppPrefix);
+    const myPrefix = 'my_';
+    const oppPrefix = 'opp_';
     const myActive = format === 'Singles' ? [0] : [0, 1];
     const oppActive = format === 'Singles' ? [0] : [0, 1];
+    const initMyTeam = initializeTeamState(myMons, myPrefix, myActive.length);
+    const initOppTeam = initializeTeamState(oppMons, oppPrefix, oppActive.length);
 
     setMyTeamState(initMyTeam);
     setOpponentTeamState(initOppTeam);
     setMyActiveIndices(myActive);
     setOppActiveIndices(oppActive);
     setIsWaitingForOpponentTeam(false);
-    setPhase('INTRO');
 
-    // Entrance abilities are announced after the match-intro screen finishes
+    // Reset battlefield conditions and hold logs during loading screen
+    setFieldConditions({});
+    fieldConditionsRef.current = {};
     logsHold.current = true;
-    let initField: BattleFieldConditions = {};
-    const myLeads = myActive.map((i) => initMyTeam[i]).filter(Boolean);
-    const oppLeads = oppActive.map((i) => initOppTeam[i]).filter(Boolean);
+    logQueue.current = [];
+    setActiveLogMessage(null);
+
+    // Transition to short loading screen
+    setPhase('INTRO');
+  };
+
+  const handleLoadingComplete = () => {
+    setPhase('BATTLE');
+    triggerEntranceAbilities();
+  };
+
+  const triggerEntranceAbilities = () => {
+    logsHold.current = true;
+    logQueue.current = [];
+    setActiveLogMessage(null);
+
+    setFieldConditions({});
+    fieldConditionsRef.current = {};
+
+    let currentField: BattleFieldConditions = {};
+    const myLeads = myActiveIndices.map((i) => myTeamStateRef.current[i]).filter(Boolean);
+    const oppLeads = oppActiveIndices.map((i) => opponentTeamStateRef.current[i]).filter(Boolean);
+
+    // Simulate entrance abilities with cloned leads so initial battlefield view starts clean
     const hostLeads = isHost ? myLeads : oppLeads;
     const guestLeads = isHost ? oppLeads : myLeads;
-    hostLeads.forEach((m) => {
-      initField = checkEntranceAbilities(m, initField, addLog, guestLeads);
-    });
-    guestLeads.forEach((m) => {
-      initField = checkEntranceAbilities(m, initField, addLog, hostLeads);
-    });
-    setFieldConditions(initField);
-    fieldConditionsRef.current = initField;
+    const hostLeadsCloned = hostLeads.map((p) => ({ ...p, statStages: { ...p.statStages } }));
+    const guestLeadsCloned = guestLeads.map((p) => ({ ...p, statStages: { ...p.statStages } }));
 
+    hostLeadsCloned.forEach((m) => {
+      currentField = checkEntranceAbilities(m, currentField, addLog, guestLeadsCloned, hostLeadsCloned);
+    });
+    guestLeadsCloned.forEach((m) => {
+      currentField = checkEntranceAbilities(m, currentField, addLog, hostLeadsCloned, guestLeadsCloned);
+    });
+
+    const updatedMyLeads = isHost ? hostLeadsCloned : guestLeadsCloned;
+    const updatedOppLeads = isHost ? guestLeadsCloned : hostLeadsCloned;
+
+    setMyTeamState((prev) =>
+      prev.map((p) => {
+        const lead = updatedMyLeads.find((l) => l.instanceId === p.instanceId);
+        return lead ? { ...p, statStages: { ...lead.statStages } } : p;
+      })
+    );
+    setOpponentTeamState((prev) =>
+      prev.map((p) => {
+        const lead = updatedOppLeads.find((l) => l.instanceId === p.instanceId);
+        return lead ? { ...p, statStages: { ...lead.statStages } } : p;
+      })
+    );
+    setFieldConditions(currentField);
+    fieldConditionsRef.current = currentField;
+
+    addLog(`Battle started in ${format} format! Choose your moves.`);
+
+    // Give 350ms for BattleView to mount cleanly before starting entrance animations & banners
     window.setTimeout(() => {
-      setPhase('BATTLE');
       logsHold.current = false;
       processLogQueue();
-    }, 3400);
+    }, 350);
   };
 
   const handleConfirmTeamSelection = (forcedPickIds?: string[]) => {
@@ -213,14 +268,22 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
   const isPlayingLogs = useRef<boolean>(false);
 
   const processLogQueue = async () => {
-    if (isPlayingLogs.current || logQueue.current.length === 0) return;
+    if (isPlayingLogs.current || logsHold.current || logQueue.current.length === 0) return;
     isPlayingLogs.current = true;
     while (logQueue.current.length > 0) {
+      if (logsHold.current) break;
       const nextLog = logQueue.current.shift();
       if (nextLog) {
+        // Dynamically apply field conditions (Weather & Terrain)
+        if (nextLog.meta?.field) {
+          setFieldConditions(nextLog.meta.field);
+          fieldConditionsRef.current = nextLog.meta.field;
+        }
+
+
         setActiveLogMessage(nextLog);
-        setBattleLog(prev => [...prev, nextLog]);
-        await new Promise(r => setTimeout(r, 750)); // Show each log for 0.75 seconds
+        setBattleLog((prev) => [...prev, nextLog]);
+        await new Promise((r) => setTimeout(r, 1250)); // Show each log for 1.25s so animations are visible
       }
     }
     setActiveLogMessage(null);
@@ -229,7 +292,9 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
   const addLog = (text: string, meta?: LogMeta) => {
     logQueue.current.push({ text, meta });
-    processLogQueue();
+    if (!logsHold.current) {
+      processLogQueue();
+    }
   };
 
   const [isTurnProcessing, setIsTurnProcessing] = useState<boolean>(false);
@@ -385,6 +450,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
 
 
+  const [totalDamageDealt, setTotalDamageDealt] = useState<number>(0);
+
   const executeAuthoritativeTurn = (hostActs: BattleAction[], guestActs: BattleAction[]) => {
     setTurn((t) => t + 1);
     setIsTurnProcessing(true);
@@ -398,6 +465,11 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       oppActiveIndicesRef.current,
       format
     );
+
+    // Track damage dealt to opponent
+    const prevOppHp = opponentTeamStateRef.current.reduce((sum, p) => sum + p.currentHp, 0);
+    const nextOppHp = turnResult.nextGuestTeam.reduce((sum, p) => sum + p.currentHp, 0);
+    setTotalDamageDealt((prev) => prev + Math.max(0, prevOppHp - nextOppHp));
 
     // Send Authoritative GAME_STATE_UPDATE to Guest
     peerManager.sendMessage('GAME_STATE_UPDATE', {
@@ -429,6 +501,12 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
 
   const handleIncomingGameStateUpdate = (payload: any) => {
     setTurn((t) => t + 1);
+
+    // Track damage dealt to opponent (host in this case)
+    const prevOppHp = opponentTeamStateRef.current.reduce((sum, p) => sum + p.currentHp, 0);
+    const nextOppHp = payload.hostTeam.reduce((sum: number, p: any) => sum + p.currentHp, 0);
+    setTotalDamageDealt((prev) => prev + Math.max(0, prevOppHp - nextOppHp));
+
     setMyTeamState(payload.guestTeam);
     setOpponentTeamState(payload.hostTeam);
     setFieldConditions(payload.fieldConditions);
@@ -473,6 +551,9 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         }
       } else if (msg.type === 'GAME_STATE_UPDATE') {
         handleIncomingGameStateUpdate(msg.payload);
+      } else if (msg.type === 'FORFEIT') {
+        addLog('Opponent forfeited the match!');
+        setWinner('Player');
       }
     };
 
@@ -497,6 +578,11 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       format
     );
 
+    // Track damage dealt to opponent
+    const prevOppHp = opponentTeamStateRef.current.reduce((sum, p) => sum + p.currentHp, 0);
+    const nextOppHp = turnResult.nextGuestTeam.reduce((sum, p) => sum + p.currentHp, 0);
+    setTotalDamageDealt((prev) => prev + Math.max(0, prevOppHp - nextOppHp));
+
     setMyTeamState(turnResult.nextHostTeam);
     setOpponentTeamState(turnResult.nextGuestTeam);
     setFieldConditions(turnResult.activeField);
@@ -520,11 +606,20 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     nextActive[slotNum] = benchTeamIndex;
     setMyActiveIndices(nextActive);
 
-    const sentMon = myTeamState[benchTeamIndex];
-    if (sentMon) {
-      setMyTeamState((prev) => prev.map((p, i) => (i === benchTeamIndex ? { ...p, turnsOnField: 1 } : p)));
+    const originalMon = myTeamState[benchTeamIndex];
+    if (originalMon) {
+      const sentMon = { ...originalMon, turnsOnField: 1 };
       addLog(`✨ Go, ${sentMon.nickname}!`);
-      setFieldConditions((prev) => checkEntranceAbilities(sentMon, prev, addLog));
+      const oppFoes = oppActiveIndices.map(i => opponentTeamState[i]).filter(f => f && !f.isFainted && f.currentHp > 0);
+      setFieldConditions((prev) => {
+        let currentField = applyEntranceHazards(sentMon, prev, true, addLog);
+        if (!sentMon.isFainted && sentMon.currentHp > 0) {
+          const allies = nextActive.map(i => (i === benchTeamIndex ? sentMon : myTeamState[i])).filter(a => a && !a.isFainted && a.currentHp > 0);
+          currentField = checkEntranceAbilities(sentMon, currentField, addLog, oppFoes, allies);
+        }
+        return currentField;
+      });
+      setMyTeamState((prev) => prev.map((p, i) => (i === benchTeamIndex ? sentMon : p)));
     }
 
     const remaining = pendingReplacements.slice(1);
@@ -566,12 +661,50 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         oppLeads={oppLeads}
         opponentName={opponentName}
         format={format}
+        onComplete={handleLoadingComplete}
       />
     );
   }
 
+  const handleConcede = () => {
+    addLog('You forfeited the match.');
+    if (roomId !== 'LOCAL_SOLO') {
+      peerManager.sendMessage('FORFEIT', {});
+    }
+    setWinner('Opponent');
+  };
+
+  const handleRematch = () => {
+    setWinner(null);
+    setTurn(0);
+    setTotalDamageDealt(0);
+    setPendingActions([]);
+    setSelectedActorIndex(0);
+    setBattleLog([{ text: `Battle started in ${format} format! Choose your moves.` }]);
+    if (roomId === 'LOCAL_SOLO') {
+      setSelectedPickIds([]);
+      setPhase('PREVIEW');
+    } else {
+      onExit();
+    }
+  };
+
   if (winner) {
-    return <ResultScreen winner={winner} onExit={onExit} />;
+    const stats = {
+      turns: Math.max(1, turn),
+      playerFainted: myTeamState.filter((p) => p.isFainted || p.currentHp <= 0).length,
+      opponentFainted: opponentTeamState.filter((p) => p.isFainted || p.currentHp <= 0).length,
+      totalDamageDealt,
+    };
+    return (
+      <ResultScreen
+        winner={winner}
+        stats={stats}
+        isMultiplayer={roomId !== 'LOCAL_SOLO'}
+        onRematch={handleRematch}
+        onExit={onExit}
+      />
+    );
   }
 
   return (
@@ -603,6 +736,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
         onToggleMega={() => setIsMegaChecked(!isMegaChecked)}
         isMegaChecked={isMegaChecked}
         onExit={onExit}
+        onConcede={handleConcede}
         onShowCalc={() => setShowBattleCalc(true)}
         onCancelTarget={() => setTargetModalMove(null)}
       />
@@ -640,7 +774,7 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
                       <div className="text-xs text-slate-400">Lv. {pkmn.level}</div>
                       <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden mt-1.5 border border-slate-700">
                         <div
-                          className={`h-full ${hpPct < 20 ? 'bg-rose-500' : hpPct < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                          className={`h-full ${hpPct < 15 ? 'bg-rose-500' : hpPct < 50 ? 'bg-amber-500' : 'bg-emerald-500'}`}
                           style={{ width: `${hpPct}%` }}
                         />
                       </div>

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import type { BattleFormat, CustomPokemon, PlayerTeam } from '../types/pokemon';
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { peerManager } from '../network/peerManager';
-import { Swords, Users, Copy, Check, Sparkles, ArrowLeft, ShieldCheck, AlertTriangle, Dices, Crown } from 'lucide-react';
+import { Swords, Users, Copy, Check, Sparkles, ArrowLeft, Dices, Crown } from 'lucide-react';
 
 
 interface LobbyProps {

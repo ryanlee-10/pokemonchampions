@@ -1,6 +1,8 @@
 import type { ActivePokemonState, BattleFormat, Move } from '../types/pokemon';
 import { getTypeEffectiveness } from '../data/typeChart';
 import { getStatStageMultiplier } from './statCalc';
+import { isSlicingMove, isPunchMove, isSoundMove, hasSecondaryEffect, makesContact } from '../data/moveFlags';
+
 export const INTIMIDATE_IMMUNE = ['Inner Focus', 'Own Tempo', 'Oblivious', 'Scrappy', 'Clear Body', 'White Smoke', 'Hyper Cutter', 'Full Metal Body', 'Guard Dog'];
 
 export interface DamageResult {
@@ -37,21 +39,36 @@ export function calculateDamage(
     return { damage: 0, isCrit: false, effectiveness: 1, randomRoll: 100, description: '' };
   }
 
+  const isMoldBreaker = attacker.ability === 'Mold Breaker';
+  const effectiveDefenderAbility = isMoldBreaker ? '' : defender.ability;
+
+  // Cloud Nine suppresses all weather
+  const isCloudNine = attacker.ability === 'Cloud Nine' || defender.ability === 'Cloud Nine';
+  const effectiveWeather = isCloudNine ? 'Clear' : (field?.weather || 'Clear');
+
   const level = attacker.level || 50;
   let power = move.power;
   let moveType = move.type;
 
+  // Type-changing abilities
+  if (attacker.ability === 'Pixilate' && moveType === 'Normal') {
+    moveType = 'Fairy';
+    power = Math.floor(power * 1.2);
+  } else if (attacker.ability === 'Liquid Voice' && isSoundMove(move)) {
+    moveType = 'Water';
+  }
+
   // Weather Ball dynamically changes type and doubles power in weather
-  if (move.id === 'weather_ball' && field?.weather && field.weather !== 'Clear') {
+  if (move.id === 'weather_ball' && effectiveWeather !== 'Clear') {
     power = 100;
-    if (field.weather === 'Sun') moveType = 'Fire';
-    else if (field.weather === 'Rain') moveType = 'Water';
-    else if (field.weather === 'Sandstorm') moveType = 'Rock';
-    else if (field.weather === 'Snow') moveType = 'Ice';
+    if (effectiveWeather === 'Sun') moveType = 'Fire';
+    else if (effectiveWeather === 'Rain') moveType = 'Water';
+    else if (effectiveWeather === 'Sandstorm') moveType = 'Rock';
+    else if (effectiveWeather === 'Snow') moveType = 'Ice';
   }
 
   // Solar Beam & Solar Blade power is halved in non-Sun weather (Rain, Sandstorm, Snow)
-  if ((move.id === 'solar_beam' || move.id === 'solar_blade') && field?.weather && field.weather !== 'Sun' && field.weather !== 'Clear') {
+  if ((move.id === 'solar_beam' || move.id === 'solar_blade') && effectiveWeather !== 'Sun' && effectiveWeather !== 'Clear') {
     power = Math.floor(power * 0.5);
   }
 
@@ -62,6 +79,45 @@ export function calculateDamage(
   } else if (move.id === 'last_respects') {
     const faintedCount = attackerTeam ? attackerTeam.filter((p) => p.isFainted || p.currentHp <= 0).length : 0;
     power = 50 + faintedCount * 50;
+  }
+
+  // Supreme Overlord Ability (Boosts move power by 10% per fainted ally, max 5 allies / +50%)
+  if (attacker.ability === 'Supreme Overlord' && attackerTeam) {
+    const faintedAllies = Math.min(5, attackerTeam.filter((p) => (p.isFainted || p.currentHp <= 0) && p.instanceId !== attacker.instanceId).length);
+    if (faintedAllies > 0) {
+      power = Math.floor(power * (1 + faintedAllies * 0.1));
+    }
+  }
+
+  // Base power boosting abilities
+  if (attacker.ability === 'Technician' && power <= 60 && power > 0) {
+    power = Math.floor(power * 1.5);
+  }
+  if (attacker.ability === 'Sharpness' && isSlicingMove(move)) {
+    power = Math.floor(power * 1.5);
+  }
+  if (attacker.ability === 'Iron Fist' && isPunchMove(move)) {
+    power = Math.floor(power * 1.2);
+  }
+  if (attacker.ability === 'Reckless' && move.recoilPercent && move.recoilPercent > 0) {
+    power = Math.floor(power * 1.2);
+  }
+  if (attacker.ability === 'Punk Rock' && isSoundMove(move)) {
+    power = Math.floor(power * 1.3);
+  }
+  if (attacker.ability === 'Sheer Force' && hasSecondaryEffect(move)) {
+    power = Math.floor(power * 1.3);
+  }
+  if (attacker.hasFlashFireActive && moveType === 'Fire') {
+    power = Math.floor(power * 1.5);
+  }
+
+  // Pinch abilities (Blaze, Overgrow, Torrent, Swarm) when HP <= 33%
+  if (attacker.currentHp <= Math.floor(attacker.maxStats.hp / 3)) {
+    if (attacker.ability === 'Blaze' && moveType === 'Fire') power = Math.floor(power * 1.5);
+    else if (attacker.ability === 'Overgrow' && moveType === 'Grass') power = Math.floor(power * 1.5);
+    else if (attacker.ability === 'Torrent' && moveType === 'Water') power = Math.floor(power * 1.5);
+    else if (attacker.ability === 'Swarm' && moveType === 'Bug') power = Math.floor(power * 1.5);
   }
 
   // Terrain Power Modifiers (Grounded checks)
@@ -81,7 +137,7 @@ export function calculateDamage(
   }
 
   // Sand Force Ability (Boosts Rock, Ground, Steel moves by 30% in Sandstorm)
-  if (field?.weather === 'Sandstorm' && attacker.ability === 'Sand Force' && ['Rock', 'Ground', 'Steel'].includes(moveType)) {
+  if (effectiveWeather === 'Sandstorm' && attacker.ability === 'Sand Force' && ['Rock', 'Ground', 'Steel'].includes(moveType)) {
     power = Math.floor(power * 1.3);
   }
 
@@ -92,21 +148,27 @@ export function calculateDamage(
   let attackValue = attacker.maxStats[atkStatName] * getStatStageMultiplier(attacker.statStages[atkStatName]);
   let defenseValue = defender.maxStats[defStatName] * getStatStageMultiplier(defender.statStages[defStatName]);
 
-  // Weather Defensive Stat Boosts
-  const defTypes = defender.activeTypes || defender.species.types;
-  if (field?.weather === 'Sandstorm' && defStatName === 'spDef' && defTypes.includes('Rock')) {
+  // Solar Power in Sun (Sp. Atk x1.5)
+  if (effectiveWeather === 'Sun' && attacker.ability === 'Solar Power' && atkStatName === 'spAtk') {
+    attackValue = Math.floor(attackValue * 1.5);
+  }
+
+  // Marvel Scale (Def x1.5 if statused)
+  if (effectiveDefenderAbility === 'Marvel Scale' && defender.status && defStatName === 'defense') {
     defenseValue = Math.floor(defenseValue * 1.5);
   }
-  if (field?.weather === 'Snow' && defStatName === 'defense' && defTypes.includes('Ice')) {
+
+  // Weather Defensive Stat Boosts
+  const defTypes = defender.activeTypes || defender.species.types;
+  if (effectiveWeather === 'Sandstorm' && defStatName === 'spDef' && defTypes.includes('Rock')) {
+    defenseValue = Math.floor(defenseValue * 1.5);
+  }
+  if (effectiveWeather === 'Snow' && defStatName === 'defense' && defTypes.includes('Ice')) {
     defenseValue = Math.floor(defenseValue * 1.5);
   }
 
   // Held Item Stat Modifiers
   if (attacker.item === 'life_orb') attackValue = Math.floor(attackValue * 1.3);
-  if (attacker.item === 'choice_band' && move.category === 'Physical') attackValue = Math.floor(attackValue * 1.5);
-  if (attacker.item === 'choice_specs' && move.category === 'Special') attackValue = Math.floor(attackValue * 1.5);
-  if (defender.item === 'assault_vest' && move.category === 'Special') defenseValue = Math.floor(defenseValue * 1.5);
-  if (defender.item === 'eviolite') defenseValue = Math.floor(defenseValue * 1.5);
 
   // Critical Hit Determination (Gen 7-9 official mechanics)
   const isAlwaysCrit =
@@ -138,10 +200,10 @@ export function calculateDamage(
   }
 
   // Step 2.5: Weather Modifiers (Sun / Rain)
-  if (field?.weather === 'Sun') {
+  if (effectiveWeather === 'Sun') {
     if (moveType === 'Fire') damage = Math.floor(damage * 1.5);
     if (moveType === 'Water') damage = Math.floor(damage * 0.5);
-  } else if (field?.weather === 'Rain') {
+  } else if (effectiveWeather === 'Rain') {
     if (moveType === 'Water') damage = Math.floor(damage * 1.5);
     if (moveType === 'Fire') damage = Math.floor(damage * 0.5);
   }
@@ -168,6 +230,11 @@ export function calculateDamage(
     damage = Math.floor(damage * stabMultiplier);
   }
 
+  // Tough Claws: Contact moves deal 1.3x damage
+  if (attacker.ability === 'Tough Claws' && makesContact(move)) {
+    damage = Math.floor(damage * 1.3);
+  }
+
   // Step 6: Type Effectiveness Multiplier (0x, 0.25x, 0.5x, 1x, 2x, 4x)
   const defenderTypes = defender.activeTypes || defender.species.types;
   const effectiveness = getTypeEffectiveness(moveType, defenderTypes);
@@ -178,13 +245,36 @@ export function calculateDamage(
     damage = Math.floor(damage * 0.5);
   }
 
-  // Step 7.5: Aurora Veil / Reflect / Light Screen damage reduction
-  if ((isDefenderAuroraVeilActive || field?.auroraVeil) && effectiveness > 0) {
-    damage = Math.floor(damage * (format === 'Doubles' ? 0.66 : 0.5));
-  } else if (field?.reflect && move.category === 'Physical' && effectiveness > 0) {
-    damage = Math.floor(damage * (format === 'Doubles' ? 0.66 : 0.5));
-  } else if (field?.lightScreen && move.category === 'Special' && effectiveness > 0) {
-    damage = Math.floor(damage * (format === 'Doubles' ? 0.66 : 0.5));
+  // Step 7.5: Aurora Veil / Reflect / Light Screen damage reduction (Bypassed by Infiltrator)
+  const bypassScreens = attacker.ability === 'Infiltrator';
+  if (!bypassScreens) {
+    if ((isDefenderAuroraVeilActive || field?.auroraVeil) && effectiveness > 0) {
+      damage = Math.floor(damage * (format === 'Doubles' ? 0.66 : 0.5));
+    } else if (field?.reflect && move.category === 'Physical' && effectiveness > 0) {
+      damage = Math.floor(damage * (format === 'Doubles' ? 0.66 : 0.5));
+    } else if (field?.lightScreen && move.category === 'Special' && effectiveness > 0) {
+      damage = Math.floor(damage * (format === 'Doubles' ? 0.66 : 0.5));
+    }
+  }
+
+  // Multiscale Ability (Halves damage when defender is at full HP)
+  if (effectiveDefenderAbility === 'Multiscale' && defender.currentHp >= defender.maxStats.hp && effectiveness > 0) {
+    damage = Math.floor(damage * 0.5);
+  }
+
+  // Punk Rock (Defender takes 50% damage from sound moves)
+  if (effectiveDefenderAbility === 'Punk Rock' && isSoundMove(move) && effectiveness > 0) {
+    damage = Math.floor(damage * 0.5);
+  }
+
+  // Thick Fat (Defender takes 50% damage from Fire and Ice attacks)
+  if (effectiveDefenderAbility === 'Thick Fat' && (moveType === 'Fire' || moveType === 'Ice') && effectiveness > 0) {
+    damage = Math.floor(damage * 0.5);
+  }
+
+  // Heatproof (Defender takes 50% damage from Fire attacks)
+  if (effectiveDefenderAbility === 'Heatproof' && moveType === 'Fire' && effectiveness > 0) {
+    damage = Math.floor(damage * 0.5);
   }
 
   // Step 7.8: Glaive Rush vulnerability (defender takes 2x double damage)
@@ -201,13 +291,14 @@ export function calculateDamage(
 
   let desc = '';
   if (effectiveness === 0) desc = `It doesn't affect ${defender.nickname}...`;
+  else if (effectiveness >= 4) desc = "It's extremely effective!";
   else if (effectiveness >= 2) desc = "It's super effective!";
   else if (effectiveness > 0 && effectiveness < 1) desc = "It's not very effective...";
 
-  if (field?.weather === 'Sun' && moveType === 'Fire') desc += ' (☀️ Boosted by Sun!)';
-  if (field?.weather === 'Sun' && moveType === 'Water') desc += ' (☀️ Weakened by Sun!)';
-  if (field?.weather === 'Rain' && moveType === 'Water') desc += ' (🌧️ Boosted by Rain!)';
-  if (field?.weather === 'Rain' && moveType === 'Fire') desc += ' (🌧️ Weakened by Rain!)';
+  if (effectiveWeather === 'Sun' && moveType === 'Fire') desc += ' (☀️ Boosted by Sun!)';
+  if (effectiveWeather === 'Sun' && moveType === 'Water') desc += ' (☀️ Weakened by Sun!)';
+  if (effectiveWeather === 'Rain' && moveType === 'Water') desc += ' (🌧️ Boosted by Rain!)';
+  if (effectiveWeather === 'Rain' && moveType === 'Fire') desc += ' (🌧️ Weakened by Rain!)';
   if (field?.terrain === 'Grassy' && moveType === 'Ground' && isGrounded(defender)) desc += ' (🌿 Halved by Grassy Terrain!)';
 
   if (isGlaiveVulnerableHit && effectiveness > 0) desc += ' (2x Glaive Rush Vulnerability!)';
@@ -265,21 +356,36 @@ export function calculateDamageSpread(
     };
   }
 
+  const isMoldBreaker = attacker.ability === 'Mold Breaker';
+  const effectiveDefenderAbility = isMoldBreaker ? '' : defender.ability;
+
+  // Cloud Nine suppresses all weather
+  const isCloudNine = attacker.ability === 'Cloud Nine' || defender.ability === 'Cloud Nine';
+  const effectiveWeather = isCloudNine ? 'Clear' : (field.weather || 'Clear');
+
   const level = attacker.level || 50;
   let power = move.power;
   let moveType = move.type;
 
+  // Type-changing abilities
+  if (attacker.ability === 'Pixilate' && moveType === 'Normal') {
+    moveType = 'Fairy';
+    power = Math.floor(power * 1.2);
+  } else if (attacker.ability === 'Liquid Voice' && isSoundMove(move)) {
+    moveType = 'Water';
+  }
+
   // Weather Ball dynamically changes type and doubles power in weather
-  if (move.id === 'weather_ball' && field.weather && field.weather !== 'Clear') {
+  if (move.id === 'weather_ball' && effectiveWeather !== 'Clear') {
     power = 100;
-    if (field.weather === 'Sun') moveType = 'Fire';
-    else if (field.weather === 'Rain') moveType = 'Water';
-    else if (field.weather === 'Sandstorm') moveType = 'Rock';
-    else if (field.weather === 'Snow') moveType = 'Ice';
+    if (effectiveWeather === 'Sun') moveType = 'Fire';
+    else if (effectiveWeather === 'Rain') moveType = 'Water';
+    else if (effectiveWeather === 'Sandstorm') moveType = 'Rock';
+    else if (effectiveWeather === 'Snow') moveType = 'Ice';
   }
 
   // Solar Beam & Solar Blade power is halved in non-Sun weather (Rain, Sandstorm, Snow)
-  if ((move.id === 'solar_beam' || move.id === 'solar_blade') && field.weather && field.weather !== 'Sun' && field.weather !== 'Clear') {
+  if ((move.id === 'solar_beam' || move.id === 'solar_blade') && effectiveWeather !== 'Sun' && effectiveWeather !== 'Clear') {
     power = Math.floor(power * 0.5);
   }
 
@@ -288,6 +394,37 @@ export function calculateDamageSpread(
     power = 50 + Math.min(300, hits * 50);
   } else if (move.id === 'last_respects') {
     power = 150;
+  }
+
+  // Base power boosting abilities
+  if (attacker.ability === 'Technician' && power <= 60 && power > 0) {
+    power = Math.floor(power * 1.5);
+  }
+  if (attacker.ability === 'Sharpness' && isSlicingMove(move)) {
+    power = Math.floor(power * 1.5);
+  }
+  if (attacker.ability === 'Iron Fist' && isPunchMove(move)) {
+    power = Math.floor(power * 1.2);
+  }
+  if (attacker.ability === 'Reckless' && move.recoilPercent && move.recoilPercent > 0) {
+    power = Math.floor(power * 1.2);
+  }
+  if (attacker.ability === 'Punk Rock' && isSoundMove(move)) {
+    power = Math.floor(power * 1.3);
+  }
+  if (attacker.ability === 'Sheer Force' && hasSecondaryEffect(move)) {
+    power = Math.floor(power * 1.3);
+  }
+  if (attacker.hasFlashFireActive && moveType === 'Fire') {
+    power = Math.floor(power * 1.5);
+  }
+
+  // Pinch abilities (Blaze, Overgrow, Torrent, Swarm) when HP <= 33%
+  if (attacker.currentHp <= Math.floor(attacker.maxStats.hp / 3)) {
+    if (attacker.ability === 'Blaze' && moveType === 'Fire') power = Math.floor(power * 1.5);
+    else if (attacker.ability === 'Overgrow' && moveType === 'Grass') power = Math.floor(power * 1.5);
+    else if (attacker.ability === 'Torrent' && moveType === 'Water') power = Math.floor(power * 1.5);
+    else if (attacker.ability === 'Swarm' && moveType === 'Bug') power = Math.floor(power * 1.5);
   }
 
   // Terrain boosts (Grounded check)
@@ -303,21 +440,27 @@ export function calculateDamageSpread(
   let attackValue = attacker.maxStats[atkStatName] * getStatStageMultiplier(attacker.statStages[atkStatName]);
   let defenseValue = defender.maxStats[defStatName] * getStatStageMultiplier(defender.statStages[defStatName]);
 
-  // Weather defensive stat boosts
-  const defenderTypes = defender.activeTypes || defender.species.types;
-  if (field.weather === 'Sandstorm' && defStatName === 'spDef' && defenderTypes.includes('Rock')) {
+  // Solar Power in Sun (Sp. Atk x1.5)
+  if (effectiveWeather === 'Sun' && attacker.ability === 'Solar Power' && atkStatName === 'spAtk') {
+    attackValue = Math.floor(attackValue * 1.5);
+  }
+
+  // Marvel Scale (Def x1.5 if statused)
+  if (effectiveDefenderAbility === 'Marvel Scale' && defender.status && defStatName === 'defense') {
     defenseValue = Math.floor(defenseValue * 1.5);
   }
-  if (field.weather === 'Snow' && defStatName === 'defense' && defenderTypes.includes('Ice')) {
+
+  // Weather defensive stat boosts
+  const defenderTypes = defender.activeTypes || defender.species.types;
+  if (effectiveWeather === 'Sandstorm' && defStatName === 'spDef' && defenderTypes.includes('Rock')) {
+    defenseValue = Math.floor(defenseValue * 1.5);
+  }
+  if (effectiveWeather === 'Snow' && defStatName === 'defense' && defenderTypes.includes('Ice')) {
     defenseValue = Math.floor(defenseValue * 1.5);
   }
 
   // Item modifiers
-  if (attacker.item === 'choice_band' && move.category === 'Physical') attackValue = Math.floor(attackValue * 1.5);
-  if (attacker.item === 'choice_specs' && move.category === 'Special') attackValue = Math.floor(attackValue * 1.5);
   if (attacker.item === 'life_orb') attackValue = Math.floor(attackValue * 1.3);
-  if (defender.item === 'assault_vest' && move.category === 'Special') defenseValue = Math.floor(defenseValue * 1.5);
-  if (defender.item === 'eviolite') defenseValue = Math.floor(defenseValue * 1.5);
 
   // Ruin abilities
   if (attacker.ability === 'Sword of Ruin' && move.category === 'Physical') defenseValue = Math.floor(defenseValue * 0.75);
@@ -332,10 +475,10 @@ export function calculateDamageSpread(
   }
 
   // Weather modifier (Sun: Fire +50%, Water -50%; Rain: Water +50%, Fire -50%)
-  if (field.weather === 'Sun') {
+  if (effectiveWeather === 'Sun') {
     if (moveType === 'Fire') baseDmg = Math.floor(baseDmg * 1.5);
     if (moveType === 'Water') baseDmg = Math.floor(baseDmg * 0.5);
-  } else if (field.weather === 'Rain') {
+  } else if (effectiveWeather === 'Rain') {
     if (moveType === 'Water') baseDmg = Math.floor(baseDmg * 1.5);
     if (moveType === 'Fire') baseDmg = Math.floor(baseDmg * 0.5);
   }
@@ -353,8 +496,31 @@ export function calculateDamageSpread(
     baseDmg = Math.floor(baseDmg * stabMultiplier);
   }
 
+  // Tough Claws: Contact moves deal 1.3x damage
+  if (attacker.ability === 'Tough Claws' && makesContact(move)) {
+    baseDmg = Math.floor(baseDmg * 1.3);
+  }
+
+  // Type-boosting Items
+  const typeBoosters: Record<string, string> = {
+    silver_powder: 'Bug', black_glasses: 'Dark', dragon_fang: 'Dragon', magnet: 'Electric', fairy_feather: 'Fairy', black_belt: 'Fighting', charcoal: 'Fire', sharp_beak: 'Flying', spell_tag: 'Ghost', miracle_seed: 'Grass', soft_sand: 'Ground', never_melt_ice: 'Ice', silk_scarf: 'Normal', poison_barb: 'Poison', twisted_spoon: 'Psychic', hard_stone: 'Rock', metal_coat: 'Steel', mystic_water: 'Water'
+  };
+  if (typeBoosters[attacker.item] === moveType) {
+    baseDmg = Math.floor(baseDmg * 1.2);
+  }
+
   // Type effectiveness
-  const effectiveness = getTypeEffectiveness(moveType, defenderTypes);
+  let effectiveness = getTypeEffectiveness(moveType, defenderTypes);
+  
+  // Type-resist Berries
+  const resistBerries: Record<string, string> = {
+    occa_berry: 'Fire', passho_berry: 'Water', wacan_berry: 'Electric', rindo_berry: 'Grass', yache_berry: 'Ice', chople_berry: 'Fighting', kebia_berry: 'Poison', shuca_berry: 'Ground', coba_berry: 'Flying', payapa_berry: 'Psychic', tanga_berry: 'Bug', charti_berry: 'Rock', kasib_berry: 'Ghost', haban_berry: 'Dragon', colbur_berry: 'Dark', babiri_berry: 'Steel', roseli_berry: 'Fairy'
+  };
+  let berryActivated = false;
+  if (effectiveness > 1 && resistBerries[defender.item] === moveType && !defender.itemConsumed) {
+    effectiveness = effectiveness * 0.5;
+    berryActivated = true;
+  }
 
   // Expert Belt
   if (attacker.item === 'expert_belt' && effectiveness > 1) {
@@ -366,13 +532,36 @@ export function calculateDamageSpread(
     baseDmg = Math.floor(baseDmg * 0.5);
   }
 
-  // Screens
-  if (field.auroraVeil) {
-    baseDmg = Math.floor(baseDmg * (format === 'Doubles' ? 0.66 : 0.5));
-  } else if (field.reflect && move.category === 'Physical') {
-    baseDmg = Math.floor(baseDmg * (format === 'Doubles' ? 0.66 : 0.5));
-  } else if (field.lightScreen && move.category === 'Special') {
-    baseDmg = Math.floor(baseDmg * (format === 'Doubles' ? 0.66 : 0.5));
+  // Screens (Bypassed by Infiltrator)
+  const bypassScreens = attacker.ability === 'Infiltrator';
+  if (!bypassScreens) {
+    if (field.auroraVeil) {
+      baseDmg = Math.floor(baseDmg * (format === 'Doubles' ? 0.66 : 0.5));
+    } else if (field.reflect && move.category === 'Physical') {
+      baseDmg = Math.floor(baseDmg * (format === 'Doubles' ? 0.66 : 0.5));
+    } else if (field.lightScreen && move.category === 'Special') {
+      baseDmg = Math.floor(baseDmg * (format === 'Doubles' ? 0.66 : 0.5));
+    }
+  }
+
+  // Multiscale Ability (Halves damage when defender is at full HP)
+  if (effectiveDefenderAbility === 'Multiscale' && defender.currentHp >= defender.maxStats.hp && effectiveness > 0) {
+    baseDmg = Math.floor(baseDmg * 0.5);
+  }
+
+  // Punk Rock (Defender takes 50% damage from sound moves)
+  if (effectiveDefenderAbility === 'Punk Rock' && isSoundMove(move) && effectiveness > 0) {
+    baseDmg = Math.floor(baseDmg * 0.5);
+  }
+
+  // Thick Fat (Defender takes 50% damage from Fire and Ice attacks)
+  if (effectiveDefenderAbility === 'Thick Fat' && (moveType === 'Fire' || moveType === 'Ice') && effectiveness > 0) {
+    baseDmg = Math.floor(baseDmg * 0.5);
+  }
+
+  // Heatproof (Defender takes 50% damage from Fire attacks)
+  if (effectiveDefenderAbility === 'Heatproof' && moveType === 'Fire' && effectiveness > 0) {
+    baseDmg = Math.floor(baseDmg * 0.5);
   }
 
   if (defender.isGlaiveRushVulnerable) {
@@ -428,6 +617,7 @@ export function calculateDamageSpread(
 
   let desc = '';
   if (effectiveness === 0) desc = 'No effect';
+  else if (effectiveness >= 4) desc = `Extremely effective (${effectiveness}x)`;
   else if (effectiveness >= 2) desc = `Super effective (${effectiveness}x)`;
   else if (effectiveness > 0 && effectiveness < 1) desc = `Not very effective (${effectiveness}x)`;
   else desc = 'Neutral (1x)';
@@ -440,6 +630,8 @@ export function calculateDamageSpread(
   if (field.terrain === 'Grassy' && moveType === 'Grass' && isGrounded(attacker)) desc += ' • 🌿 Grassy Terrain boosted (+30%)';
   if (field.terrain === 'Electric' && moveType === 'Electric' && isGrounded(attacker)) desc += ' • ⚡ Electric Terrain boosted (+30%)';
   if (field.terrain === 'Psychic' && moveType === 'Psychic' && isGrounded(attacker)) desc += ' • 🔮 Psychic Terrain boosted (+30%)';
+  if (typeBoosters[attacker.item] === moveType) desc += ` • 💥 Item boosted (+20%)`;
+  if (berryActivated) desc += ` • 🫐 Berry halved damage`;
 
   return {
     minDamage,

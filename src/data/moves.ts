@@ -315,7 +315,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Special',
     target: 'SpreadEnemies',
     description: 'Rains coins down on all enemies. Lowers Sp. Atk by 2.',
-    statChanges: [{ stat: 'spAtk', stages: -2 }]
+    statChanges: [{ stat: 'spAtk', stages: -2, target: 'Self' }]
   },
   earthquake: {
     id: 'earthquake',
@@ -456,7 +456,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Special',
     target: 'SpreadEnemies',
     description: 'Yells loudly at opponents, lowering Sp. Atk by 1.',
-    statChanges: [{ stat: 'spAtk', stages: -1 }]
+    statChanges: [{ stat: 'spAtk', stages: -1, target: 'Target' }]
   },
 
   // High Impact Attacks
@@ -471,7 +471,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Special',
     target: 'SingleEnemy',
     description: 'Charges electricity boosting Sp. Atk by 1 and fires on next turn.',
-    statChanges: [{ stat: 'spAtk', stages: 1 }],
+    statChanges: [{ stat: 'spAtk', stages: 1, target: 'Self' }],
     requiresCharge: true
   },
   solar_beam: {
@@ -602,7 +602,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Special',
     target: 'SingleEnemy',
     description: 'Comets rain down. Lowers user Sp. Atk by 2.',
-    statChanges: [{ stat: 'spAtk', stages: -2 }]
+    statChanges: [{ stat: 'spAtk', stages: -2, target: 'Self' }]
   },
   earth_power: {
     id: 'earth_power',
@@ -708,7 +708,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Physical',
     target: 'SingleEnemy',
     description: 'Attacks with spirit-breaking force. Lowers Sp. Atk by 1.',
-    statChanges: [{ stat: 'spAtk', stages: -1 }]
+    statChanges: [{ stat: 'spAtk', stages: -1, target: 'Target' }]
   },
   play_rough: {
     id: 'play_rough',
@@ -909,7 +909,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Status',
     target: 'Self',
     description: 'Dance boosting Attack (+2 stages).',
-    statChanges: [{ stat: 'attack', stages: 2 }]
+    statChanges: [{ stat: 'attack', stages: 2, target: 'Self' }]
   },
   nasty_plot: {
     id: 'nasty_plot',
@@ -922,7 +922,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     category: 'Status',
     target: 'Self',
     description: 'Bad thoughts boosting Sp. Atk (+2 stages).',
-    statChanges: [{ stat: 'spAtk', stages: 2 }]
+    statChanges: [{ stat: 'spAtk', stages: 2, target: 'Self' }]
   },
   quiver_dance: {
     id: 'quiver_dance',
@@ -936,9 +936,9 @@ export const MOVES_DATABASE: Record<string, Move> = {
     target: 'Self',
     description: 'Mystical dance boosting Sp. Atk, Sp. Def, and Speed by 1.',
     statChanges: [
-      { stat: 'spAtk', stages: 1 },
-      { stat: 'spDef', stages: 1 },
-      { stat: 'speed', stages: 1 }
+      { stat: 'spAtk', stages: 1, target: 'Self' },
+      { stat: 'spDef', stages: 1, target: 'Self' },
+      { stat: 'speed', stages: 1, target: 'Self' }
     ]
   },
   dragon_dance: {
@@ -953,8 +953,8 @@ export const MOVES_DATABASE: Record<string, Move> = {
     target: 'Self',
     description: 'Mystic dance boosting Attack and Speed by 1.',
     statChanges: [
-      { stat: 'attack', stages: 1 },
-      { stat: 'speed', stages: 1 }
+      { stat: 'attack', stages: 1, target: 'Self' },
+      { stat: 'speed', stages: 1, target: 'Self' }
     ]
   },
   tailwind: {
@@ -992,7 +992,11 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 32,
     category: 'Status',
     target: 'SingleEnemy',
-    description: 'Lowers target Attack and Sp. Atk by 1 and switches out.'
+    description: 'Lowers target Attack and Sp. Atk by 1 and switches out.',
+    statChanges: [
+      { stat: 'attack', stages: -1, target: 'Target' },
+      { stat: 'spAtk', stages: -1, target: 'Target' }
+    ]
   },
   u_turn: {
     id: 'u_turn',
@@ -1105,7 +1109,11 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 32,
     category: 'Status',
     target: 'Self',
-    description: 'Focuses mind to boost Sp. Atk and Sp. Def (+1 stage).'
+    description: 'Focuses mind to boost Sp. Atk and Sp. Def (+1 stage).',
+    statChanges: [
+      { stat: 'spAtk', stages: 1, target: 'Self' },
+      { stat: 'spDef', stages: 1, target: 'Self' }
+    ]
   },
   roost: {
     id: 'roost',
@@ -1279,8 +1287,8 @@ export const MOVES_DATABASE: Record<string, Move> = {
     target: 'Self',
     description: 'Bulks up body to boost Attack and Defense (+1 stage).',
     statChanges: [
-      { stat: 'attack', stages: 1 },
-      { stat: 'defense', stages: 1 }
+      { stat: 'attack', stages: 1, target: 'Self' },
+      { stat: 'defense', stages: 1, target: 'Self' }
     ]
   },
   power_whip: {

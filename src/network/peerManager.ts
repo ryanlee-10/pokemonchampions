@@ -31,6 +31,7 @@ export class PeerManager {
   public isHost: boolean = false;
 
   private onMessageCallback?: (msg: NetworkMessage) => void;
+  private messageListeners: ((msg: NetworkMessage) => void)[] = [];
   private onConnectCallback?: () => void;
   private onDisconnectCallback?: () => void;
 
@@ -38,6 +39,14 @@ export class PeerManager {
 
   public setMessageCallback(callback?: (msg: NetworkMessage) => void) {
     this.onMessageCallback = callback;
+  }
+
+  public addMessageListener(listener: (msg: NetworkMessage) => void) {
+    this.messageListeners.push(listener);
+  }
+
+  public removeMessageListener(listener: (msg: NetworkMessage) => void) {
+    this.messageListeners = this.messageListeners.filter((l) => l !== listener);
   }
 
   public setDisconnectCallback(callback?: () => void) {
@@ -120,9 +129,13 @@ export class PeerManager {
     if (!this.conn) return;
 
     this.conn.on('data', (data: any) => {
+      const msg = data as NetworkMessage;
       if (this.onMessageCallback) {
-        this.onMessageCallback(data as NetworkMessage);
+        this.onMessageCallback(msg);
       }
+      this.messageListeners.forEach((fn) => {
+        try { fn(msg); } catch (e) { console.error('Error in message listener:', e); }
+      });
     });
 
     this.conn.on('close', () => {

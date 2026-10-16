@@ -7,13 +7,18 @@ import {
   Plus,
   Trash2,
   Shield,
-  ShieldCheck,
-  AlertTriangle,
   Edit2,
   Search,
-  X
+  X,
+  Download,
+  Upload,
+  Copy,
+  Check,
+  FileText,
+  AlertTriangle
 } from 'lucide-react';
 import { ItemSelect } from './ItemSelect';
+import { exportTeamToShowdown, parseShowdownText } from '../utils/showdownParser';
 
 
 interface BoxesScreenProps {
@@ -46,6 +51,17 @@ export const BoxesScreen: React.FC<BoxesScreenProps> = ({
   const [draggedSlot, setDraggedSlot] = useState<{ id?: string, index?: number, location: 'TEAM' | 'BOX' } | null>(null);
 
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
+  const [showShowdownModal, setShowShowdownModal] = useState<boolean>(false);
+  const [showdownTab, setShowdownTab] = useState<'import' | 'export'>('import');
+  const [showdownPasteInput, setShowdownPasteInput] = useState<string>('');
+  const [importStatus, setImportStatus] = useState<{
+    successCount?: number;
+    warnings?: string[];
+    skipped?: string[];
+    error?: string;
+  } | null>(null);
+  const [copiedExport, setCopiedExport] = useState<boolean>(false);
+
   const [rosterSearchQuery, setRosterSearchQuery] = useState<string>('');
   const [boxSearchQuery, setBoxSearchQuery] = useState<string>('');
   const [editingTeamNameIdx, setEditingTeamNameIdx] = useState<number | null>(null);
@@ -61,7 +77,6 @@ export const BoxesScreen: React.FC<BoxesScreenProps> = ({
       currentTeamItemCounts[p.item] = (currentTeamItemCounts[p.item] || 0) + 1;
     }
   });
-  const hasItemClauseViolation = Object.values(currentTeamItemCounts).some((count) => count > 1);
 
   const takenItemMap: Record<string, string> = {};
   currentTeamPokemon.forEach((p) => {
@@ -226,7 +241,7 @@ export const BoxesScreen: React.FC<BoxesScreenProps> = ({
       ability: spec.abilities[0] || 'Overgrow',
       nature: 'Adamant',
       evs: { hp: 32, attack: 32, defense: 2, spAtk: 0, spDef: 0, speed: 0 },
-      moves: spec.learnset.slice(0, 4)
+      moves: Array.from(new Set(spec.learnset)).slice(0, 4)
     };
 
     onUpdatePcBox([...pcBox, newPkmn]);
@@ -247,9 +262,22 @@ export const BoxesScreen: React.FC<BoxesScreenProps> = ({
         <h2 className="boxes-title">
           <Package size={28} /> Box & Team Manager
         </h2>
-        <button className="btn-primary" onClick={() => setShowAddModal(true)}>
-          <Plus size={18} /> Add to PC Box
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            className="btn-ghost flex items-center gap-2 border border-white/10"
+            onClick={() => {
+              setShowdownTab('import');
+              setImportStatus(null);
+              setCopiedExport(false);
+              setShowShowdownModal(true);
+            }}
+          >
+            <FileText size={16} /> Showdown Import / Export
+          </button>
+          <button className="btn-primary" onClick={() => setShowAddModal(true)}>
+            <Plus size={18} /> Add to PC Box
+          </button>
+        </div>
       </div>
 
       <div className="boxes-workspace">
@@ -492,6 +520,226 @@ export const BoxesScreen: React.FC<BoxesScreenProps> = ({
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Showdown Import / Export Modal */}
+      {showShowdownModal && (
+        <div className="modal-overlay">
+          <div className="modal-content animate-in max-w-2xl w-full">
+            <div className="modal-header">
+              <div className="flex items-center gap-3">
+                <FileText size={22} className="text-primary" />
+                <div>
+                  <h3 className="font-bold text-xl">Pokémon Showdown Integration</h3>
+                  <p className="text-xs text-muted">Import PokéPastes or export your battle team to Showdown format</p>
+                </div>
+              </div>
+              <button className="btn-ghost" onClick={() => setShowShowdownModal(false)}>
+                <X size={24} />
+              </button>
+            </div>
+
+            {/* Tab switchers */}
+            <div className="flex border-b border-white/10 px-6 pt-2 gap-4">
+              <button
+                className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition-all ${
+                  showdownTab === 'import'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted hover:text-white'
+                }`}
+                onClick={() => { setShowdownTab('import'); setImportStatus(null); }}
+              >
+                <Upload size={16} /> Import Paste
+              </button>
+              <button
+                className={`pb-3 text-sm font-bold flex items-center gap-2 border-b-2 transition-all ${
+                  showdownTab === 'export'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted hover:text-white'
+                }`}
+                onClick={() => { setShowdownTab('export'); setCopiedExport(false); }}
+              >
+                <Download size={16} /> Export Team ({currentTeam.name})
+              </button>
+            </div>
+
+            <div className="modal-body p-6 flex flex-col gap-4">
+              {showdownTab === 'import' ? (
+                <>
+                  <p className="text-xs text-muted">
+                    Paste standard Pokémon Showdown export text or PokéPaste below. 
+                    EVs will automatically scale to the 0–32 system, moves will be validated, and species outside the 74-mon Regulation M-C roster will be reported.
+                  </p>
+                  
+                  <textarea
+                    rows={10}
+                    value={showdownPasteInput}
+                    onChange={(e) => setShowdownPasteInput(e.target.value)}
+                    placeholder={`Rillaboom @ Miracle Seed\nAbility: Grassy Surge\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 Def\nAdamant Nature\n- Grassy Glide\n- Wood Hammer\n- Fake Out\n- Protect\n\nKingambit @ Leftovers\nAbility: Supreme Overlord\nLevel: 50\nEVs: 252 HP / 252 Atk / 4 SpD\nAdamant Nature\n- Sucker Punch\n- Kowtow Cleave\n- Iron Head\n- Swords Dance`}
+                    className="input-base font-mono text-xs p-3 leading-relaxed w-full resize-none bg-black/40 border border-white/10 rounded-lg text-slate-200"
+                  />
+
+                  {/* Feedback / status banner */}
+                  {importStatus && (
+                    <div className="flex flex-col gap-2 p-3 rounded-lg text-xs bg-black/30 border border-white/10">
+                      {importStatus.successCount !== undefined && importStatus.successCount > 0 && (
+                        <div className="text-emerald-400 font-bold flex items-center gap-2">
+                          <Check size={16} /> Successfully parsed and imported {importStatus.successCount} Pokémon!
+                        </div>
+                      )}
+                      {importStatus.error && (
+                        <div className="text-rose-400 font-bold flex items-center gap-2">
+                          <AlertTriangle size={16} /> {importStatus.error}
+                        </div>
+                      )}
+                      {importStatus.skipped && importStatus.skipped.length > 0 && (
+                        <div className="text-amber-400 flex flex-col gap-1">
+                          <span className="font-bold">Skipped (Not in Regulation M-C Roster):</span>
+                          <ul className="list-disc pl-5 text-slate-300">
+                            {importStatus.skipped.map((s, idx) => (
+                              <li key={idx}>{s}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {importStatus.warnings && importStatus.warnings.length > 0 && (
+                        <div className="text-blue-300 flex flex-col gap-1">
+                          <span className="font-bold">Adjustments:</span>
+                          <ul className="list-disc pl-5 text-slate-300">
+                            {importStatus.warnings.map((w, idx) => (
+                              <li key={idx}>{w}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button
+                      className="btn-ghost"
+                      onClick={() => setShowShowdownModal(false)}
+                    >
+                      Close
+                    </button>
+                    <button
+                      className="btn-secondary"
+                      onClick={() => {
+                        setImportStatus(null);
+                        if (!showdownPasteInput.trim()) {
+                          setImportStatus({ error: 'Paste is empty. Please paste your Pokémon Showdown export text.' });
+                          return;
+                        }
+                        const result = parseShowdownText(showdownPasteInput);
+                        if (result.pokemon.length === 0) {
+                          setImportStatus({
+                            error: 'No valid Pokémon found in the paste. Note: only Pokémon in the Regulation M-C roster can be imported.',
+                            skipped: result.skipped,
+                            warnings: result.warnings
+                          });
+                          return;
+                        }
+                        onUpdatePcBox([...pcBox, ...result.pokemon]);
+                        setImportStatus({
+                          successCount: result.pokemon.length,
+                          warnings: result.warnings,
+                          skipped: result.skipped
+                        });
+                      }}
+                    >
+                      Import into PC Box
+                    </button>
+                    <button
+                      className="btn-primary"
+                      onClick={() => {
+                        setImportStatus(null);
+                        if (!showdownPasteInput.trim()) {
+                          setImportStatus({ error: 'Paste is empty. Please paste your Pokémon Showdown export text.' });
+                          return;
+                        }
+                        const result = parseShowdownText(showdownPasteInput);
+                        if (result.pokemon.length === 0) {
+                          setImportStatus({
+                            error: 'No valid Pokémon found in the paste. Note: only Pokémon in the Regulation M-C roster can be imported.',
+                            skipped: result.skipped,
+                            warnings: result.warnings
+                          });
+                          return;
+                        }
+                        const teamMons = result.pokemon.slice(0, 6);
+                        const excessMons = result.pokemon.slice(6);
+                        const newTeam: PlayerTeam = {
+                          playerId: 'player',
+                          name: `Showdown Team ${battleTeams.length + 1}`,
+                          pokemon: teamMons
+                        };
+                        const nextTeams = [...battleTeams, newTeam];
+                        setBattleTeams(nextTeams);
+                        setActiveTeamIdx(nextTeams.length - 1);
+                        syncTeamState(teamMons, nextTeams);
+                        if (excessMons.length > 0) {
+                          onUpdatePcBox([...pcBox, ...excessMons]);
+                        }
+                        setImportStatus({
+                          successCount: result.pokemon.length,
+                          warnings: result.warnings,
+                          skipped: result.skipped
+                        });
+                      }}
+                    >
+                      Import as New Battle Team
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-muted">
+                    This text can be pasted directly into Pokémon Showdown's teambuilder or PokéPaste.
+                  </p>
+
+                  <textarea
+                    rows={12}
+                    readOnly
+                    value={exportTeamToShowdown(currentTeamPokemon) || '// No Pokémon in the active team to export.'}
+                    className="input-base font-mono text-xs p-3 leading-relaxed w-full resize-none bg-black/40 border border-white/10 rounded-lg text-slate-200"
+                  />
+
+                  <div className="flex items-center justify-between pt-2">
+                    <span className="text-xs text-muted">
+                      {currentTeamPokemon.length} Pokémon exported from "{currentTeam.name}"
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        className="btn-ghost"
+                        onClick={() => setShowShowdownModal(false)}
+                      >
+                        Close
+                      </button>
+                      <button
+                        className="btn-primary flex items-center gap-2"
+                        onClick={async () => {
+                          const text = exportTeamToShowdown(currentTeamPokemon);
+                          if (!text) return;
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            setCopiedExport(true);
+                            setTimeout(() => setCopiedExport(false), 2500);
+                          } catch {
+                            // clipboard fallback
+                          }
+                        }}
+                        disabled={currentTeamPokemon.length === 0}
+                      >
+                        {copiedExport ? <Check size={16} /> : <Copy size={16} />}
+                        {copiedExport ? 'Copied to Clipboard!' : 'Copy to Clipboard'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

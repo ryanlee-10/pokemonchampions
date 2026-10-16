@@ -141,6 +141,11 @@ export interface ActivePokemonState {
   timesHit?: number;
   turnsOnField?: number;
   isGlaiveRushVulnerable?: boolean;
+  isDisguiseBusted?: boolean;
+  hasFlashFireActive?: boolean;
+  proteanUsed?: boolean;
+  disabledMoveId?: string;
+  disabledMoveTurns?: number;
 }
 
 export type BattleFormat = 'Singles' | 'Doubles';
@@ -175,4 +180,8 @@ export interface BattleFieldConditions {
   lightScreenTeam2?: number;
   auroraVeilTeam1?: number;
   auroraVeilTeam2?: number;
+  stealthRockTeam1?: boolean;
+  stealthRockTeam2?: boolean;
+  toxicSpikesTeam1?: number;
+  toxicSpikesTeam2?: number;
 }

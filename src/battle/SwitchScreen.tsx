@@ -31,7 +31,7 @@ const STATS: Array<{ key: StatName; label: string }> = [
 ];
 
 const pctOf = (p: ActivePokemonState) => Math.max(0, Math.round((p.currentHp / p.maxStats.hp) * 100));
-const hpBand = (pct: number) => (pct > 50 ? 'ok' : pct > 20 ? 'mid' : 'low');
+const hpBand = (pct: number) => (pct >= 50 ? 'ok' : pct >= 15 ? 'mid' : 'low');
 const hasItem = (id?: string) => !!id && id !== 'none';
 const itemName = (id: string) => HELD_ITEMS.find((i) => i.id === id)?.name ?? id.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const itemIconUrl = (id: string) => `https://play.pokemonshowdown.com/sprites/itemicons/${id.replace(/_/g, '-')}.png`;
@@ -142,7 +142,10 @@ export const SwitchScreen: React.FC<Props> = ({
           {tab === 'moves' ? (
             <>
               <div className="ss-moves">
-                {mon.moves.map(({ move, currentPp }) => (
+                {mon.moves
+                  .filter((item, idx, arr) => arr.findIndex((x) => x.move.id === item.move.id) === idx)
+                  .slice(0, 4)
+                  .map(({ move, currentPp }) => (
                   <div key={move.id} className="ss-move" style={{ ['--tc' as string]: TYPE_COLORS[move.type] || '#888' }}>
                     <TypeBadge type={move.type} size={34} />
                     <span className="ss-move-name">{move.name}</span>

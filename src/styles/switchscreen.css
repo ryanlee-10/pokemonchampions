@@ -24,7 +24,7 @@
 .ss-hp-fill.mid { background: linear-gradient(180deg, #ffe97a, #ffb81c); }
 .ss-hp-fill.low { background: linear-gradient(180deg, #ff9a8a, #ff3a2d); }
 .ss-row-sprite { position: relative; width: 64px; height: 56px; flex-shrink: 0; display: grid; place-items: center; background: rgba(255,255,255,0.92); border-radius: 6px; }
-.ss-row-sprite > img:first-child { max-width: 60px; max-height: 52px; image-rendering: pixelated; }
+.ss-row-sprite > img:first-child { max-width: 60px; max-height: 52px; image-rendering: auto; object-fit: contain; }
 .ss-held { position: absolute; right: -4px; bottom: -6px; width: 28px; height: 28px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.7)); image-rendering: pixelated; }
 .ss-held.used, .ss-item-inline.used { opacity: 0.28; filter: grayscale(1); }
 
