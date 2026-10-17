@@ -1,29 +1,33 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, Bot, Swords, Users, Shield, Zap, Play } from 'lucide-react';
+import { ArrowLeft, Bot, Swords, Users, Shield, Zap, Play, Wrench } from 'lucide-react';
 import type { BattleFormat, CustomPokemon, PlayerTeam } from '../types/pokemon';
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { TypeBadge } from '../intro/TypeRing';
 import '../styles/arena-menus.css';
 
 interface CpuSetupProps {
+  initialFormat?: BattleFormat;
   team?: CustomPokemon[];
   teams?: PlayerTeam[];
   activeTeamIdx?: number;
   onSelectTeamIdx?: (idx: number) => void;
   onBack?: () => void;
+  onTeambuilder?: () => void;
   onStart: (format: BattleFormat) => void;
 }
 
 export const CpuSetup: React.FC<CpuSetupProps> = ({
+  initialFormat = 'Doubles',
   team = [],
   teams = [],
   activeTeamIdx = 0,
   onSelectTeamIdx,
   onBack,
+  onTeambuilder,
   onStart,
 }) => {
-  const [selectedFormat, setSelectedFormat] = useState<BattleFormat>('Doubles');
+  const [selectedFormat, setSelectedFormat] = useState<BattleFormat>(initialFormat);
 
   // Check Item Clause
   const itemCounts: Record<string, number> = {};
@@ -148,19 +152,31 @@ export const CpuSetup: React.FC<CpuSetupProps> = ({
         >
           <div className="arena-panel-title">
             <h2><Users size={18} /> Deployed Battle Party</h2>
-            {teams.length > 0 && onSelectTeamIdx && (
-              <select
-                className="team-dropdown"
-                value={activeTeamIdx}
-                onChange={(e) => onSelectTeamIdx(Number(e.target.value))}
-              >
-                {teams.map((t, idx) => (
-                  <option key={idx} value={idx}>
-                    {t.name} ({t.pokemon.length}/6)
-                  </option>
-                ))}
-              </select>
-            )}
+            <div className="team-header-controls">
+              {teams.length > 0 && onSelectTeamIdx && (
+                <select
+                  className="team-dropdown"
+                  value={activeTeamIdx}
+                  onChange={(e) => onSelectTeamIdx(Number(e.target.value))}
+                >
+                  {teams.map((t, idx) => (
+                    <option key={idx} value={idx}>
+                      {t.name} ({t.pokemon.length}/6)
+                    </option>
+                  ))}
+                </select>
+              )}
+              {onTeambuilder && (
+                <button
+                  type="button"
+                  className="team-edit-shortcut"
+                  onClick={onTeambuilder}
+                  title="Open Teambuilder to modify boxes and party"
+                >
+                  <Wrench size={12} /> Edit Team
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 6-Slot Party Grid */}

@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import type { BattleFormat, CustomPokemon, PlayerTeam } from '../types/pokemon';
 import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { peerManager } from '../network/peerManager';
-import { Swords, Copy, Check, Sparkles, ArrowLeft, Dices, Crown, Radio, Bot, Zap } from 'lucide-react';
+import { Swords, Copy, Check, Sparkles, ArrowLeft, Dices, Crown, Radio, Bot, Zap, Wrench, ClipboardPaste } from 'lucide-react';
 import { TypeBadge } from '../intro/TypeRing';
 import '../styles/arena-menus.css';
 
@@ -15,6 +15,7 @@ interface LobbyProps {
   activeTeamIdx?: number;
   onSelectTeamIdx?: (idx: number) => void;
   onBackToMenu: () => void;
+  onTeambuilder?: () => void;
   onStartGame: (isHost: boolean, roomId: string) => void;
 }
 
@@ -26,6 +27,7 @@ export const Lobby: React.FC<LobbyProps> = ({
   activeTeamIdx = 0,
   onSelectTeamIdx,
   onBackToMenu,
+  onTeambuilder,
   onStartGame,
 }) => {
   const [roomCode, setRoomCode] = useState<string>('');
@@ -121,6 +123,15 @@ export const Lobby: React.FC<LobbyProps> = ({
       navigator.clipboard.writeText(roomCode);
       setIsCopied(true);
       setTimeout(() => setIsCopied(false), 2000);
+    }
+  };
+
+  const handlePasteJoinCode = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) setJoinCodeInput(text.trim().toUpperCase());
+    } catch {
+      // clipboard access fallback
     }
   };
 
@@ -237,19 +248,31 @@ export const Lobby: React.FC<LobbyProps> = ({
             <span style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
               Active Party ({team.length}/6)
             </span>
-            {teams.length > 0 && onSelectTeamIdx && (
-              <select
-                className="team-dropdown"
-                value={activeTeamIdx}
-                onChange={(e) => onSelectTeamIdx(Number(e.target.value))}
-              >
-                {teams.map((t, idx) => (
-                  <option key={idx} value={idx}>
-                    {t.name} ({t.pokemon.length}/6)
-                  </option>
-                ))}
-              </select>
-            )}
+            <div className="team-header-controls">
+              {teams.length > 0 && onSelectTeamIdx && (
+                <select
+                  className="team-dropdown"
+                  value={activeTeamIdx}
+                  onChange={(e) => onSelectTeamIdx(Number(e.target.value))}
+                >
+                  {teams.map((t, idx) => (
+                    <option key={idx} value={idx}>
+                      {t.name} ({t.pokemon.length}/6)
+                    </option>
+                  ))}
+                </select>
+              )}
+              {onTeambuilder && (
+                <button
+                  type="button"
+                  className="team-edit-shortcut"
+                  onClick={onTeambuilder}
+                  title="Open Teambuilder to modify boxes and party"
+                >
+                  <Wrench size={12} /> Edit Team
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 6-Pokemon Roster Grid */}
@@ -355,9 +378,17 @@ export const Lobby: React.FC<LobbyProps> = ({
                       type="text"
                       placeholder="CHAMP-XXXX"
                       value={joinCodeInput}
-                      onChange={(e) => setJoinCodeInput(e.target.value)}
+                      onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
                       className="mp-input"
                     />
+                    <button
+                      className="mp-icon-btn"
+                      type="button"
+                      title="Paste Room Code from Clipboard"
+                      onClick={handlePasteJoinCode}
+                    >
+                      <ClipboardPaste size={18} />
+                    </button>
                   </div>
 
                   <button className="mp-action-btn secondary" onClick={handleJoinRoom}>

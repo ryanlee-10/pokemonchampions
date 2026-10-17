@@ -167,16 +167,19 @@ export function App() {
                     activeTeamIdx={activeTeamIdx}
                     onSelectTeamIdx={setActiveTeamIdx}
                     onBackToMenu={() => setScreen('MAIN_MENU')}
+                    onTeambuilder={() => openTeambuilder('Boxes')}
                     onStartGame={handleStartGame}
                   />
                 )}
                 {screen === 'CPU' && (
                   <CpuSetup
+                    initialFormat={format}
                     team={activeTeam}
                     teams={teams}
                     activeTeamIdx={activeTeamIdx}
                     onSelectTeamIdx={setActiveTeamIdx}
                     onBack={() => setScreen('MAIN_MENU')}
+                    onTeambuilder={() => openTeambuilder('Boxes')}
                     onStart={(f) => { setFormat(f); handleStartGame(true, 'LOCAL_SOLO'); }}
                   />
                 )}

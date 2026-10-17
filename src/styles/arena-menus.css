@@ -354,6 +354,35 @@
   border-color: #38bdf8;
 }
 
+.team-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-edit-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--z-accent2, #22d3ee);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.team-edit-shortcut:hover {
+  background: rgba(34, 211, 238, 0.15);
+  border-color: rgba(34, 211, 238, 0.4);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
 /* Party Pokémon Grid (6 Slots) */
 .team-mon-grid {
   display: grid;
