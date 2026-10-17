@@ -171,7 +171,14 @@ export function App() {
                   />
                 )}
                 {screen === 'CPU' && (
-                  <CpuSetup onStart={(f) => { setFormat(f); handleStartGame(true, 'LOCAL_SOLO'); }} />
+                  <CpuSetup
+                    team={activeTeam}
+                    teams={teams}
+                    activeTeamIdx={activeTeamIdx}
+                    onSelectTeamIdx={setActiveTeamIdx}
+                    onBack={() => setScreen('MAIN_MENU')}
+                    onStart={(f) => { setFormat(f); handleStartGame(true, 'LOCAL_SOLO'); }}
+                  />
                 )}
                 {screen === 'TEAMBUILDER' && (
                   <TeambuilderHub
