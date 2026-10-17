@@ -31,6 +31,36 @@ export type LogMeta = {
 
 export type Logger = (msg: string, meta?: LogMeta) => void;
 
+/** Visual-only state of a Pokémon captured at the moment a log line was emitted. */
+export type MonSnapshot = Pick<
+  ActivePokemonState,
+  'currentHp' | 'maxStats' | 'isFainted' | 'status' | 'statStages' | 'activeSpriteUrl' | 'isMegaEvolved' | 'activeTypes' | 'ability' | 'item' | 'nickname'
+>;
+
+/** Snapshot of both sides at a point during turn resolution (used for step-by-step replay). */
+export type TurnSnapshot = {
+  host: MonSnapshot[];
+  guest: MonSnapshot[];
+  hostActive: number[];
+  guestActive: number[];
+};
+
+export type TurnLogEntry = { text: string; meta?: LogMeta; snap?: TurnSnapshot };
+
+const snapshotMon = (p: ActivePokemonState): MonSnapshot => ({
+  currentHp: p.currentHp,
+  maxStats: p.maxStats,
+  isFainted: p.isFainted,
+  status: p.status,
+  statStages: { ...p.statStages },
+  activeSpriteUrl: p.activeSpriteUrl,
+  isMegaEvolved: p.isMegaEvolved,
+  activeTypes: p.activeTypes ? [...p.activeTypes] : undefined,
+  ability: p.ability,
+  item: p.item,
+  nickname: p.nickname
+});
+
 export const applyEntranceHazards = (
   enteringMon: ActivePokemonState,
   currentFields: BattleFieldConditions,
@@ -207,9 +237,21 @@ export const resolveTurnCore = (
     guestActiveSlots: number[],
     format: BattleFormat
   ) => {
-    const turnLogs: { text: string; meta?: LogMeta }[] = [];
+    const turnLogs: TurnLogEntry[] = [];
+    // Active-slot arrays used for snapshots (swapped to the post-replacement arrays at end of turn)
+    let snapHostActive: number[] = hostActiveSlots;
+    let snapGuestActive: number[] = guestActiveSlots;
     const pushLog = (txt: string, meta?: LogMeta) => {
-      turnLogs.push({ text: txt, meta });
+      turnLogs.push({
+        text: txt,
+        meta,
+        snap: {
+          host: nextMyTeam.map(snapshotMon),
+          guest: nextOppTeam.map(snapshotMon),
+          hostActive: [...snapHostActive],
+          guestActive: [...snapGuestActive]
+        }
+      });
     };
 
     // Deep clone team states and field
@@ -2110,6 +2152,7 @@ export const resolveTurnCore = (
 
     // 4. Process Guest / Opponent replacements
     let updatedOppActive = [...guestActiveSlots];
+    snapGuestActive = updatedOppActive;
     guestActiveSlots.forEach((oppIdx, slotNum) => {
       const oppMon = nextOppTeam[oppIdx];
       if (oppMon && (oppMon.isFainted || oppMon.currentHp <= 0)) {
@@ -2133,6 +2176,7 @@ export const resolveTurnCore = (
 
     // 5. Process Host / Player replacements
     let updatedMyActive = [...hostActiveSlots];
+    snapHostActive = updatedMyActive;
     hostActiveSlots.forEach((myIdx, slotNum) => {
       const myMon = nextMyTeam[myIdx];
       if (myMon && (myMon.isFainted || myMon.currentHp <= 0)) {

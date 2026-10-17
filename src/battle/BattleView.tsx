@@ -251,6 +251,13 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
     }
   }, [activeLogMessage]);
 
+  /** True while the current log line is this Pokémon's faint message (plays the KO animation). */
+  const isFaintingNow = (mon: ActivePokemonState) =>
+    !!activeLogMessage && (
+      (activeLogMessage.meta?.kind === 'faint' && activeLogMessage.meta.id === mon.instanceId) ||
+      (!activeLogMessage.meta?.id && activeLogMessage.text.includes(`${mon.nickname} fainted`))
+    );
+
   const getStatLabel = (msgText?: string, metaStat?: string): string => {
     if (metaStat && STAT_LABEL[metaStat]) return STAT_LABEL[metaStat];
     if (metaStat) return metaStat;
@@ -289,9 +296,10 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
         {/* ---------- 2D Showdown Animated Sprites ---------- */}
         <div className="bv-field">
           {oppSlots.map(({ idx, mon }, n) => {
-            if (mon.currentHp <= 0) return null;
+            const fainting = isFaintingNow(mon);
+            if (mon.currentHp <= 0 && !fainting) return null;
             const isAttacker = !!activeLogMessage && activeLogMessage.text.startsWith(mon.nickname) && activeLogMessage.text.includes(' used ');
-            const hit = !!activeLogMessage && (activeLogMessage.meta?.kind === 'damage' || / took .*damage|lost .*HP|was hit/.test(activeLogMessage.text)) && (activeLogMessage.meta?.id ? activeLogMessage.meta.id === mon.instanceId : activeLogMessage.text.includes(mon.nickname));
+            const hit = !fainting && !!activeLogMessage && (activeLogMessage.meta?.kind === 'damage' || / took .*damage|lost .*HP|was hit/.test(activeLogMessage.text)) && (activeLogMessage.meta?.id ? activeLogMessage.meta.id === mon.instanceId : activeLogMessage.text.includes(mon.nickname));
             const statDrop = (activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'down' && (activeLogMessage.meta.id === mon.instanceId || (!activeLogMessage.meta.id && activeLogMessage.text.includes(mon.nickname))))
               || (!!activeLogMessage && activeLogMessage.text.includes(mon.nickname) && (activeLogMessage.text.includes('dropped') || activeLogMessage.text.includes('fell') || activeLogMessage.text.includes('lowered')));
             const statRaise = (activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'up' && (activeLogMessage.meta.id === mon.instanceId || (!activeLogMessage.meta.id && activeLogMessage.text.includes(mon.nickname))))
@@ -299,7 +307,7 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
             const statLabel = getStatLabel(activeLogMessage?.text, activeLogMessage?.meta?.stat);
             const x = oppSlots.length > 1 ? (n === 0 ? 54 : 72) : 63;
             return (
-              <div key={`opp-${idx}`} className={`bv-mon bv-mon-opp ${isAttacker ? 'attacking' : ''} ${hit ? 'hit' : ''} ${statDrop ? 'stat-drop' : ''} ${statRaise ? 'stat-raise' : ''}`} style={{ left: `${x}%`, top: '47%' }}>
+              <div key={`opp-${idx}`} className={`bv-mon bv-mon-opp ${fainting ? 'fainting' : ''} ${isAttacker ? 'attacking' : ''} ${hit ? 'hit' : ''} ${statDrop ? 'stat-drop' : ''} ${statRaise ? 'stat-raise' : ''}`} style={{ left: `${x}%`, top: '47%' }}>
                 <MonSprite mon={mon} className="bv-sprite" />
                 <div className="bv-shadow" />
                 {statDrop && (
@@ -318,10 +326,11 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
             );
           })}
           {mySlots.map(({ idx, i, mon }) => {
-            if (mon.currentHp <= 0) return null;
+            const fainting = isFaintingNow(mon);
+            if (mon.currentHp <= 0 && !fainting) return null;
             const isActor = canChoose && i === selectedActorIndex;
             const isAttacker = !!activeLogMessage && activeLogMessage.text.startsWith(mon.nickname) && activeLogMessage.text.includes(' used ');
-            const hit = !!activeLogMessage && (activeLogMessage.meta?.kind === 'damage' || / took .*damage|lost .*HP|was hit/.test(activeLogMessage.text)) && (activeLogMessage.meta?.id ? activeLogMessage.meta.id === mon.instanceId : activeLogMessage.text.includes(mon.nickname));
+            const hit = !fainting && !!activeLogMessage && (activeLogMessage.meta?.kind === 'damage' || / took .*damage|lost .*HP|was hit/.test(activeLogMessage.text)) && (activeLogMessage.meta?.id ? activeLogMessage.meta.id === mon.instanceId : activeLogMessage.text.includes(mon.nickname));
             const statDrop = (activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'down' && (activeLogMessage.meta.id === mon.instanceId || (!activeLogMessage.meta.id && activeLogMessage.text.includes(mon.nickname))))
               || (!!activeLogMessage && activeLogMessage.text.includes(mon.nickname) && (activeLogMessage.text.includes('dropped') || activeLogMessage.text.includes('fell') || activeLogMessage.text.includes('lowered')));
             const statRaise = (activeLogMessage?.meta?.kind === 'stat' && activeLogMessage.meta.dir === 'up' && (activeLogMessage.meta.id === mon.instanceId || (!activeLogMessage.meta.id && activeLogMessage.text.includes(mon.nickname))))
@@ -329,7 +338,7 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
             const statLabel = getStatLabel(activeLogMessage?.text, activeLogMessage?.meta?.stat);
             const x = mySlots.length > 1 ? (i === 0 ? 24 : 46) : 36;
             return (
-              <div key={`my-${idx}`} className={`bv-mon bv-mon-my ${isActor && isDoubles ? 'actor' : ''} ${isAttacker ? 'attacking' : ''} ${hit ? 'hit' : ''} ${statDrop ? 'stat-drop' : ''} ${statRaise ? 'stat-raise' : ''}`} style={{ left: `${x}%`, top: '86%' }}>
+              <div key={`my-${idx}`} className={`bv-mon bv-mon-my ${fainting ? 'fainting' : ''} ${isActor && isDoubles ? 'actor' : ''} ${isAttacker ? 'attacking' : ''} ${hit ? 'hit' : ''} ${statDrop ? 'stat-drop' : ''} ${statRaise ? 'stat-raise' : ''}`} style={{ left: `${x}%`, top: '86%' }}>
                 <MonSprite mon={mon} back className="bv-sprite" />
                 <div className="bv-shadow" />
                 {statDrop && (

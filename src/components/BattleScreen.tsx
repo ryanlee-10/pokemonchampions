@@ -11,7 +11,7 @@ import { POKEMON_ROSTER } from '../data/pokemonRoster';
 import { MOVES_DATABASE } from '../data/moves';
 import { calculateAllStats } from '../engine/statCalc';
 import { resolveTurnCore, checkEntranceAbilities, applyEntranceHazards } from '../engine/battleEngine';
-import type { LogMeta } from '../engine/battleEngine';
+import type { LogMeta, TurnSnapshot, MonSnapshot } from '../engine/battleEngine';
 import { peerManager } from '../network/peerManager';
 import type { NetworkMessage } from '../network/peerManager';
 import { generateRandomCpuTeam } from '../utils/showdownParser';
@@ -264,8 +264,27 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     { text: `Battle started in ${format} format! Choose your moves.` }
   ]);
   const [activeLogMessage, setActiveLogMessage] = useState<{ text: string; meta?: LogMeta } | null>(null);
-  const logQueue = useRef<{ text: string; meta?: LogMeta }[]>([]);
+
+  /**
+   * Queue entry. `snap` + `asHost` replays the battlefield state captured when the log was emitted
+   * (so HP drops / faints / switches play out one-by-one in speed order). `apply` runs a callback
+   * when reached (used to commit the authoritative end-of-turn state after playback).
+   */
+  type QueuedLog = { text?: string; meta?: LogMeta; snap?: TurnSnapshot; asHost?: boolean; apply?: () => void };
+  const logQueue = useRef<QueuedLog[]>([]);
   const isPlayingLogs = useRef<boolean>(false);
+
+  const mergeSnapshot = (team: ActivePokemonState[], snaps: MonSnapshot[]) =>
+    team.map((p, i) => (snaps[i] ? { ...p, ...snaps[i] } : p));
+
+  const applySnapshot = (snap: TurnSnapshot, asHost: boolean) => {
+    const mine = asHost ? snap.host : snap.guest;
+    const theirs = asHost ? snap.guest : snap.host;
+    setMyTeamState((prev) => mergeSnapshot(prev, mine));
+    setOpponentTeamState((prev) => mergeSnapshot(prev, theirs));
+    setMyActiveIndices([...(asHost ? snap.hostActive : snap.guestActive)]);
+    setOppActiveIndices([...(asHost ? snap.guestActive : snap.hostActive)]);
+  };
 
   const processLogQueue = async () => {
     if (isPlayingLogs.current || logsHold.current || logQueue.current.length === 0) return;
@@ -273,29 +292,39 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     while (logQueue.current.length > 0) {
       if (logsHold.current) break;
       const nextLog = logQueue.current.shift();
-      if (nextLog) {
-        // Dynamically apply field conditions (Weather & Terrain)
-        if (nextLog.meta?.field) {
-          setFieldConditions(nextLog.meta.field);
-          fieldConditionsRef.current = nextLog.meta.field;
-        }
+      if (!nextLog) continue;
 
+      if (nextLog.apply) nextLog.apply();
+      if (nextLog.text === undefined) continue; // pure state-commit entry, no delay
 
-        setActiveLogMessage(nextLog);
-        setBattleLog((prev) => [...prev, nextLog]);
-        await new Promise((r) => setTimeout(r, 1250)); // Show each log for 1.25s so animations are visible
+      // Replay battlefield state at this exact moment of the turn
+      if (nextLog.snap) applySnapshot(nextLog.snap, nextLog.asHost ?? true);
+
+      // Dynamically apply field conditions (Weather & Terrain)
+      if (nextLog.meta?.field) {
+        setFieldConditions(nextLog.meta.field);
+        fieldConditionsRef.current = nextLog.meta.field;
       }
+
+      const entry = { text: nextLog.text, meta: nextLog.meta };
+      setActiveLogMessage(entry);
+      setBattleLog((prev) => [...prev, entry]);
+      // Faints linger a bit longer so the player can watch the KO; others 1.25s so animations are visible
+      const isFaint = nextLog.meta?.kind === 'faint' || / fainted!/.test(nextLog.text);
+      await new Promise((r) => setTimeout(r, isFaint ? 1700 : 1250));
     }
     setActiveLogMessage(null);
     isPlayingLogs.current = false;
   };
 
-  const addLog = (text: string, meta?: LogMeta) => {
-    logQueue.current.push({ text, meta });
+  const enqueue = (entry: QueuedLog) => {
+    logQueue.current.push(entry);
     if (!logsHold.current) {
       processLogQueue();
     }
   };
+
+  const addLog = (text: string, meta?: LogMeta) => enqueue({ text, meta });
 
   const [isTurnProcessing, setIsTurnProcessing] = useState<boolean>(false);
   const [winner, setWinner] = useState<string | null>(null);
@@ -461,8 +490,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       myTeamStateRef.current,
       opponentTeamStateRef.current,
       fieldConditionsRef.current,
-      myActiveIndicesRef.current,
-      oppActiveIndicesRef.current,
+      [...myActiveIndicesRef.current],
+      [...oppActiveIndicesRef.current],
       format
     );
 
@@ -482,52 +511,63 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       guestActiveIndices: turnResult.nextGuestActive
     });
 
-    // Update Host state
-    setMyTeamState(turnResult.nextHostTeam);
-    setOpponentTeamState(turnResult.nextGuestTeam);
-    setFieldConditions(turnResult.activeField);
-    setMyActiveIndices(turnResult.nextHostActive);
-    setOppActiveIndices(turnResult.nextGuestActive);
-    if (turnResult.winner) setWinner(turnResult.winner);
-    turnResult.turnLogs.forEach(l => addLog(l.text, l.meta));
-
     hostPendingActionsRef.current = null;
     guestPendingActionsRef.current = null;
-    setPendingActions([]);
-    setSelectedActorIndex(0);
-    setIsWaitingForOpponentTurn(false);
-    setIsTurnProcessing(false);
+
+    // Replay the turn step-by-step, then commit the authoritative state
+    turnResult.turnLogs.forEach((l) => enqueue({ text: l.text, meta: l.meta, snap: l.snap, asHost: true }));
+    enqueue({
+      apply: () => {
+        setMyTeamState(turnResult.nextHostTeam);
+        setOpponentTeamState(turnResult.nextGuestTeam);
+        setFieldConditions(turnResult.activeField);
+        fieldConditionsRef.current = turnResult.activeField;
+        setMyActiveIndices(turnResult.nextHostActive);
+        setOppActiveIndices(turnResult.nextGuestActive);
+        if (turnResult.winner) setWinner(turnResult.winner);
+        setPendingActions([]);
+        setSelectedActorIndex(0);
+        setIsWaitingForOpponentTurn(false);
+        setIsTurnProcessing(false);
+      }
+    });
   };
 
   const handleIncomingGameStateUpdate = (payload: any) => {
     setTurn((t) => t + 1);
+    setIsTurnProcessing(true);
 
     // Track damage dealt to opponent (host in this case)
     const prevOppHp = opponentTeamStateRef.current.reduce((sum, p) => sum + p.currentHp, 0);
     const nextOppHp = payload.hostTeam.reduce((sum: number, p: any) => sum + p.currentHp, 0);
     setTotalDamageDealt((prev) => prev + Math.max(0, prevOppHp - nextOppHp));
 
-    setMyTeamState(payload.guestTeam);
-    setOpponentTeamState(payload.hostTeam);
-    setFieldConditions(payload.fieldConditions);
-    setMyActiveIndices(payload.guestActiveIndices);
-    setOppActiveIndices(payload.hostActiveIndices);
-    if (payload.winner) {
-      if (payload.winner === 'Player') setWinner('Opponent');
-      else if (payload.winner === 'Opponent') setWinner('Player');
-      else setWinner(payload.winner);
-    }
     if (payload.logs && Array.isArray(payload.logs)) {
       payload.logs.forEach((l: any) => {
-        if (typeof l === 'string') addLog(l);
-        else addLog(l.text, l.meta);
+        if (typeof l === 'string') enqueue({ text: l });
+        else enqueue({ text: l.text, meta: l.meta, snap: l.snap, asHost: false });
       });
     }
 
-    setPendingActions([]);
-    setSelectedActorIndex(0);
-    setIsWaitingForOpponentTurn(false);
-    setIsTurnProcessing(false);
+    enqueue({
+      apply: () => {
+        setMyTeamState(payload.guestTeam);
+        setOpponentTeamState(payload.hostTeam);
+        setFieldConditions(payload.fieldConditions);
+        fieldConditionsRef.current = payload.fieldConditions;
+        setMyActiveIndices(payload.guestActiveIndices);
+        setOppActiveIndices(payload.hostActiveIndices);
+        if (payload.winner) {
+          if (payload.winner === 'Player') setWinner('Opponent');
+          else if (payload.winner === 'Opponent') setWinner('Player');
+          else setWinner(payload.winner);
+        }
+        setPendingActions([]);
+        setSelectedActorIndex(0);
+        setIsWaitingForOpponentTurn(false);
+        setIsTurnProcessing(false);
+      }
+    });
   };
 
   useEffect(() => {
@@ -573,8 +613,8 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
       myTeamStateRef.current,
       opponentTeamStateRef.current,
       fieldConditionsRef.current,
-      myActiveIndicesRef.current,
-      oppActiveIndicesRef.current,
+      [...myActiveIndicesRef.current],
+      [...oppActiveIndicesRef.current],
       format
     );
 
@@ -583,18 +623,23 @@ export const BattleScreen: React.FC<BattleScreenProps> = ({
     const nextOppHp = turnResult.nextGuestTeam.reduce((sum, p) => sum + p.currentHp, 0);
     setTotalDamageDealt((prev) => prev + Math.max(0, prevOppHp - nextOppHp));
 
-    setMyTeamState(turnResult.nextHostTeam);
-    setOpponentTeamState(turnResult.nextGuestTeam);
-    setFieldConditions(turnResult.activeField);
-    setMyActiveIndices(turnResult.nextHostActive);
-    setOppActiveIndices(turnResult.nextGuestActive);
-    if (turnResult.winner) setWinner(turnResult.winner);
-    turnResult.turnLogs.forEach(l => addLog(l.text, l.meta));
-
-    setPendingActions([]);
-    setSelectedActorIndex(0);
-    setIsWaitingForOpponentTurn(false);
-    setIsTurnProcessing(false);
+    // Replay the turn step-by-step, then commit the final state
+    turnResult.turnLogs.forEach((l) => enqueue({ text: l.text, meta: l.meta, snap: l.snap, asHost: true }));
+    enqueue({
+      apply: () => {
+        setMyTeamState(turnResult.nextHostTeam);
+        setOpponentTeamState(turnResult.nextGuestTeam);
+        setFieldConditions(turnResult.activeField);
+        fieldConditionsRef.current = turnResult.activeField;
+        setMyActiveIndices(turnResult.nextHostActive);
+        setOppActiveIndices(turnResult.nextGuestActive);
+        if (turnResult.winner) setWinner(turnResult.winner);
+        setPendingActions([]);
+        setSelectedActorIndex(0);
+        setIsWaitingForOpponentTurn(false);
+        setIsTurnProcessing(false);
+      }
+    });
   };
 
   const handleChooseReplacement = (benchTeamIndex: number) => {
