@@ -146,6 +146,20 @@ export interface ActivePokemonState {
   proteanUsed?: boolean;
   disabledMoveId?: string;
   disabledMoveTurns?: number;
+  protectType?: 'protect' | 'spiky_shield' | 'kings_shield' | 'wide_guard';
+  substituteHp?: number;
+  isSeeded?: boolean;
+  seededBySide?: 'my' | 'opp';
+  tauntTurns?: number;
+  throatChopTurns?: number;
+  perishCount?: number;
+  isDestinyBond?: boolean;
+  isHelpingHandActive?: boolean;
+  isFollowMeActive?: boolean;
+  lastUsedMoveId?: string;
+  lastMoveFailed?: boolean;
+  encoreMoveId?: string;
+  encoreTurns?: number;
 }
 
 export type BattleFormat = 'Singles' | 'Doubles';

@@ -1,7 +1,16 @@
-﻿import React from 'react';
+import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AlertTriangle, Flag, X, Volume2, Calculator, Settings } from 'lucide-react';
+import { AlertTriangle, Flag, X, Volume2, Calculator, Settings, Layers } from 'lucide-react';
 import { useAppStore } from '../app/store';
+
+const ARENA_OPTIONS = [
+  { id: 'Random', name: 'Random', icon: '🎲' },
+  { id: 'Cyber Arena', name: 'Cyber Arena', icon: '⚡' },
+  { id: 'Volcano Colosseum', name: 'Volcano', icon: '🌋' },
+  { id: 'Aurora Glacier', name: 'Aurora', icon: '❄️' },
+  { id: 'Celestial Temple', name: 'Celestial', icon: '✨' },
+  { id: 'Emerald Grove', name: 'Emerald', icon: '🌿' },
+] as const;
 
 interface BattleOptionsModalProps {
   isOptionsOpen: boolean;
@@ -127,6 +136,45 @@ export const BattleOptionsModal: React.FC<BattleOptionsModalProps> = ({
                     className="ev-range-slider"
                     style={{ ['--fill-pct' as any]: `${settings.musicVolume}%` }}
                   />
+                </div>
+
+                {/* Arena Theme Selector */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 700, color: 'rgba(255,255,255,0.7)', marginBottom: '0.5rem' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                      <Layers size={14} color="#38bdf8" /> Arena Theme
+                    </span>
+                    <span style={{ color: '#38bdf8', fontWeight: 800 }}>{settings.arenaTheme || 'Random'}</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+                    {ARENA_OPTIONS.map((opt) => {
+                      const isSelected = (settings.arenaTheme || 'Random') === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          onClick={() => setSetting('arenaTheme', opt.id as any)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            padding: '0.5rem 0.6rem',
+                            borderRadius: '10px',
+                            background: isSelected ? 'rgba(56, 189, 248, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                            border: isSelected ? '1.5px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.1)',
+                            color: isSelected ? '#fff' : 'rgba(255, 255, 255, 0.7)',
+                            fontSize: '0.75rem',
+                            fontWeight: isSelected ? 800 : 600,
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <span>{opt.icon}</span>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {/* Quick Calculator */}

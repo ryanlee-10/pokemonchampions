@@ -5,6 +5,27 @@ import { calculateAllStats, getStatStageMultiplier } from './statCalc';
 import { calculateDamage, isGrounded, INTIMIDATE_IMMUNE, type CalcFieldConditions } from './damageCalc';
 import { hasSecondaryEffect, makesContact } from '../data/moveFlags';
 
+export const SOUND_MOVES = new Set([
+  'bug_buzz',
+  'hyper_voice',
+  'boomburst',
+  'sparkling_aria',
+  'perish_song',
+  'snarl',
+  'roar',
+  'overdrive'
+]);
+
+export const MULTI_HIT_CONFIGS: Record<string, { maxHits: number; perHitAccuracy?: boolean; escalatingPower?: number[] }> = {
+  population_bomb: { maxHits: 10, perHitAccuracy: true },
+  dragon_darts: { maxHits: 2 },
+  dual_wingbeat: { maxHits: 2, perHitAccuracy: true },
+  twin_beam: { maxHits: 2 },
+  triple_axel: { maxHits: 3, perHitAccuracy: true, escalatingPower: [20, 40, 60] },
+  water_shuriken: { maxHits: 5 },
+  scale_shot: { maxHits: 5 }
+};
+
 export const STAT_DISPLAY_NAMES: Record<string, string> = {
   attack: 'Attack',
   defense: 'Defense',
@@ -60,6 +81,29 @@ const snapshotMon = (p: ActivePokemonState): MonSnapshot => ({
   item: p.item,
   nickname: p.nickname
 });
+
+export const resetVolatileStatus = (pkmn: ActivePokemonState) => {
+  pkmn.statStages = { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0, accuracy: 0, evasion: 0 };
+  pkmn.turnsOnField = 0;
+  pkmn.proteanUsed = false;
+  pkmn.activeTypes = undefined;
+  pkmn.isProtecting = false;
+  pkmn.protectType = undefined;
+  pkmn.isFlinched = false;
+  pkmn.isHelpingHandActive = false;
+  pkmn.isFollowMeActive = false;
+  pkmn.isDestinyBond = false;
+  pkmn.substituteHp = undefined;
+  pkmn.isSeeded = false;
+  pkmn.seededBySide = undefined;
+  pkmn.tauntTurns = undefined;
+  pkmn.throatChopTurns = undefined;
+  pkmn.perishCount = undefined;
+  pkmn.encoreMoveId = undefined;
+  pkmn.encoreTurns = undefined;
+  pkmn.disabledMoveId = undefined;
+  pkmn.disabledMoveTurns = undefined;
+};
 
 export const applyEntranceHazards = (
   enteringMon: ActivePokemonState,
@@ -412,9 +456,11 @@ export const resolveTurnCore = (
 
     // Track conditions activated during this turn so they don't decrement on the setup turn
     const conditionsSetThisTurn = new Set<string>();
+    const executedActionIndices = new Set<number>();
 
     // Execute actions sequentially
-    allActions.forEach(({ action, isMyAction, actorTeamIndex }) => {
+    allActions.forEach(({ action, isMyAction, actorTeamIndex }, actionIndex) => {
+      executedActionIndices.add(actionIndex);
       const attackerTeam = isMyAction ? nextMyTeam : nextOppTeam;
       const defenderTeam = isMyAction ? nextOppTeam : nextMyTeam;
       const attackerActiveIndices = isMyAction ? hostActiveSlots : guestActiveSlots;
@@ -451,10 +497,7 @@ export const resolveTurnCore = (
           if (slotPos !== -1) {
             attackerActiveIndices[slotPos] = action.switchToTeamIndex;
           }
-          attacker.statStages = { attack: 0, defense: 0, spAtk: 0, spDef: 0, speed: 0, accuracy: 0, evasion: 0 };
-          attacker.turnsOnField = 0; // Bench reset
-          attacker.proteanUsed = false;
-          attacker.activeTypes = undefined;
+          resetVolatileStatus(attacker);
           newPkmn.turnsOnField = 0; // Freshly entered field! Becomes 1 at end of turn for next attack turn!
           newPkmn.proteanUsed = false;
 
@@ -522,14 +565,44 @@ export const resolveTurnCore = (
       }
 
       if (action.type === 'MOVE' && action.moveId) {
-        const move = MOVES_DATABASE[action.moveId];
+        let move = MOVES_DATABASE[action.moveId];
         if (!move) return;
 
-        // Check disabled move (Cursed Body)
+        // Reset Destiny Bond when Pokémon takes an action
+        attacker.isDestinyBond = false;
+        attacker.lastMoveFailed = false;
+
+        // Encore forces user to repeat its encored move
+        if (attacker.encoreTurns && attacker.encoreTurns > 0 && attacker.encoreMoveId) {
+          const encoredMove = MOVES_DATABASE[attacker.encoreMoveId];
+          if (encoredMove && move.id !== attacker.encoreMoveId) {
+            pushLog(`👏 ${attacker.nickname} is locked into ${encoredMove.name} by Encore!`);
+            move = encoredMove;
+          }
+        }
+
+        // Check disabled move (Cursed Body / Disable)
         if (attacker.disabledMoveId === move.id) {
           pushLog(`🚫 ${attacker.nickname}'s ${move.name} is disabled and cannot be used!`);
+          attacker.lastMoveFailed = true;
           return;
         }
+
+        // Taunt blocks status moves
+        if (attacker.tauntTurns && attacker.tauntTurns > 0 && move.category === 'Status') {
+          pushLog(`🤬 ${attacker.nickname} is taunted and cannot use ${move.name}!`);
+          attacker.lastMoveFailed = true;
+          return;
+        }
+
+        // Throat Chop blocks sound moves
+        if (attacker.throatChopTurns && attacker.throatChopTurns > 0 && SOUND_MOVES.has(move.id)) {
+          pushLog(`🔇 ${attacker.nickname} cannot use sound moves due to Throat Chop!`);
+          attacker.lastMoveFailed = true;
+          return;
+        }
+
+        attacker.lastUsedMoveId = move.id;
 
         // Decrement move PP properly! (Pressure consumes 2 PP if opponent has Pressure)
         const moveEntry = attacker.moves.find((m) => m.move.id === move.id);
@@ -557,6 +630,7 @@ export const resolveTurnCore = (
         // First Impression & Fake Out: Fail if not used on the first turn out on the field
         if ((move.id === 'first_impression' || move.id === 'fake_out') && (attacker.turnsOnField || 1) > 1) {
           pushLog(`${attacker.nickname} used ${move.name}... but it failed!`);
+          attacker.lastMoveFailed = true;
           return;
         }
 
@@ -744,12 +818,20 @@ export const resolveTurnCore = (
           // 1. Protect & Shield variants
           if (move.id === 'protect' || move.id === 'spiky_shield' || move.id === 'kings_shield') {
             attacker.isProtecting = true;
-            pushLog(`🛡️ ${attacker.nickname} protected itself!`);
+            attacker.protectType = move.id as 'protect' | 'spiky_shield' | 'kings_shield';
+            const shieldEmoji = move.id === 'spiky_shield' ? '🌵' : move.id === 'kings_shield' ? '⚔️' : '🛡️';
+            pushLog(`${shieldEmoji} ${attacker.nickname} protected itself with ${move.name}!`);
             return;
           }
           if (move.id === 'wide_guard') {
-            attacker.isProtecting = true;
-            pushLog(`🛡️ ${attacker.nickname} and its allies are protected by Wide Guard!`);
+            attackerActiveIndices.forEach((idx) => {
+              const ally = attackerTeam[idx];
+              if (ally && !ally.isFainted) {
+                ally.isProtecting = true;
+                ally.protectType = 'wide_guard';
+              }
+            });
+            pushLog(`🛡️ Wide Guard protected ${attacker.nickname}'s side against spread moves!`);
             return;
           }
 
@@ -956,11 +1038,20 @@ export const resolveTurnCore = (
           }
           if (move.id === 'substitute') {
             const cost = Math.floor(attacker.maxStats.hp / 4);
-            if (attacker.currentHp > cost) {
+            if (attacker.substituteHp && attacker.substituteHp > 0) {
+              pushLog(`${attacker.nickname} already has a substitute!`);
+              attacker.lastMoveFailed = true;
+            } else if (attacker.currentHp > cost) {
               attacker.currentHp -= cost;
-              pushLog(`🧸 ${attacker.nickname} put in a substitute!`);
+              attacker.substituteHp = cost;
+              pushLog(`🧸 ${attacker.nickname} put in a substitute! (-${cost} HP)`, {
+                kind: 'damage',
+                id: attacker.instanceId,
+                amount: cost
+              });
             } else {
               pushLog(`${attacker.nickname} used Substitute... but it failed!`);
+              attacker.lastMoveFailed = true;
             }
             return;
           }
@@ -989,6 +1080,24 @@ export const resolveTurnCore = (
           const targetSlot = action.targetSlot || 0;
           let targetSlotIdx = defenderActiveIndices[targetSlot] ?? defenderActiveIndices[0];
           let defender = defenderTeam[targetSlotIdx];
+
+          // Follow Me / Rage Powder redirection
+          if (format === 'Doubles') {
+            const redirectorIdx = defenderActiveIndices.find((idx) => {
+              const p = defenderTeam[idx];
+              if (!p || p.isFainted || p.currentHp <= 0 || !p.isFollowMeActive) return false;
+              if (p.lastUsedMoveId === 'rage_powder') {
+                const atkTypes = attacker.activeTypes || attacker.species.types;
+                if (atkTypes.includes('Grass') || attacker.item === 'safety_goggles') return false;
+              }
+              return true;
+            });
+            if (redirectorIdx !== undefined && redirectorIdx !== targetSlotIdx) {
+              targetSlotIdx = redirectorIdx;
+              defender = defenderTeam[targetSlotIdx];
+              pushLog(`${attacker.nickname}'s ${move.name} was redirected to ${defender.nickname}!`);
+            }
+          }
 
           if ((!defender || defender.isFainted || defender.currentHp <= 0) && format === 'Doubles') {
             const alternateSlotIdx = defenderActiveIndices.find(
@@ -1038,6 +1147,12 @@ export const resolveTurnCore = (
               pushLog(`🌑 Dark-type Pokémon are immune to Prankster status moves!`);
               return;
             }
+          }
+
+          // Substitute blocks opposing status moves
+          if (defender.substituteHp && defender.substituteHp > 0 && move.category === 'Status' && move.target !== 'Self') {
+            pushLog(`🧸 ${defender.nickname}'s substitute blocked ${move.name}!`);
+            return;
           }
 
           if (defender.isProtecting) {
@@ -1255,7 +1370,13 @@ export const resolveTurnCore = (
             const defTypes = defender.activeTypes || defender.species.types;
             if (defTypes.includes('Grass')) {
               pushLog(`🍃 Leech Seed does not affect Grass-type Pokémon!`);
+              attacker.lastMoveFailed = true;
+            } else if (defender.isSeeded) {
+              pushLog(`${defender.nickname} is already seeded!`);
+              attacker.lastMoveFailed = true;
             } else {
+              defender.isSeeded = true;
+              defender.seededBySide = isMyAction ? 'my' : 'opp';
               pushLog(`🌱 ${defender.nickname} was seeded!`);
             }
             return;
@@ -1263,15 +1384,37 @@ export const resolveTurnCore = (
 
           // Taunt, Encore, Disable, Quash
           if (move.id === 'taunt') {
-            pushLog(`🤬 ${defender.nickname} fell for the taunt!`);
+            if (defender.tauntTurns && defender.tauntTurns > 0) {
+              pushLog(`${defender.nickname} is already taunted!`);
+              attacker.lastMoveFailed = true;
+            } else {
+              defender.tauntTurns = 3;
+              pushLog(`🤬 ${defender.nickname} fell for the taunt! (Cannot use status moves for 3 turns)`);
+            }
             return;
           }
           if (move.id === 'encore') {
-            pushLog(`👏 ${defender.nickname} received an encore!`);
+            if (defender.lastUsedMoveId) {
+              defender.encoreMoveId = defender.lastUsedMoveId;
+              defender.encoreTurns = 3;
+              const moveObj = MOVES_DATABASE[defender.lastUsedMoveId];
+              pushLog(`👏 ${defender.nickname} received an encore for ${moveObj?.name || 'its move'}!`);
+            } else {
+              pushLog(`${attacker.nickname} used Encore... but it failed!`);
+              attacker.lastMoveFailed = true;
+            }
             return;
           }
           if (move.id === 'disable') {
-            pushLog(`🚫 ${defender.nickname}'s move was disabled!`);
+            if (defender.lastUsedMoveId && !defender.disabledMoveId) {
+              defender.disabledMoveId = defender.lastUsedMoveId;
+              defender.disabledMoveTurns = 4;
+              const moveObj = MOVES_DATABASE[defender.lastUsedMoveId];
+              pushLog(`🚫 ${defender.nickname}'s ${moveObj?.name || 'move'} was disabled for 4 turns!`);
+            } else {
+              pushLog(`${attacker.nickname} used Disable... but it failed!`);
+              attacker.lastMoveFailed = true;
+            }
             return;
           }
           if (move.id === 'quash') {
@@ -1281,14 +1424,24 @@ export const resolveTurnCore = (
 
           // Redirection, Hazards & Field Status
           if (move.id === 'helping_hand') {
+            if (format === 'Doubles') {
+              const allySlotIdx = attackerActiveIndices.find((idx) => idx !== actorTeamIndex);
+              if (allySlotIdx !== undefined && attackerTeam[allySlotIdx] && !attackerTeam[allySlotIdx].isFainted) {
+                attackerTeam[allySlotIdx].isHelpingHandActive = true;
+                pushLog(`🤝 ${attacker.nickname} boosted ${attackerTeam[allySlotIdx].nickname}'s power with Helping Hand!`);
+                return;
+              }
+            }
             pushLog(`🤝 ${attacker.nickname} is ready to help its ally!`);
             return;
           }
           if (move.id === 'follow_me' || move.id === 'rage_powder') {
-            pushLog(`🎯 ${attacker.nickname} drew attention to itself!`);
+            attacker.isFollowMeActive = true;
+            pushLog(`🎯 ${attacker.nickname} drew all attention to itself!`);
             return;
           }
           if (move.id === 'destiny_bond') {
+            attacker.isDestinyBond = true;
             pushLog(`👻 ${attacker.nickname} took its opponent with it in spirit!`);
             return;
           }
@@ -1297,6 +1450,11 @@ export const resolveTurnCore = (
             return;
           }
           if (move.id === 'perish_song') {
+            [...hostActiveSlots.map((i) => nextMyTeam[i]), ...guestActiveSlots.map((i) => nextOppTeam[i])].forEach((pkmn) => {
+              if (pkmn && !pkmn.isFainted && pkmn.ability !== 'Soundproof') {
+                pkmn.perishCount = 3;
+              }
+            });
             pushLog(`🎵 All Pokémon hearing the song will faint in 3 turns!`);
             return;
           }
@@ -1464,6 +1622,10 @@ export const resolveTurnCore = (
               }
 
               if (defender.isProtecting) {
+                if (defender.protectType === 'wide_guard') {
+                  pushLog(`🛡️ Wide Guard protected ${defender.nickname} from ${move.name}!`);
+                  return;
+                }
                 pushLog(`🛡️ ${defender.nickname} protected itself!`);
                 return;
               }
@@ -1514,6 +1676,18 @@ export const resolveTurnCore = (
                 if (defender.currentHp <= 0) {
                   defender.isFainted = true;
                   pushLog(`${defender.nickname} fainted!`);
+                }
+                return;
+              }
+
+              // Substitute absorption in spread moves
+              if (defender.substituteHp && defender.substituteHp > 0 && !SOUND_MOVES.has(move.id)) {
+                defender.substituteHp = Math.max(0, defender.substituteHp - res.damage);
+                if (defender.substituteHp <= 0) {
+                  defender.substituteHp = undefined;
+                  pushLog(`🧸 The substitute took damage for ${defender.nickname} and faded!`);
+                } else {
+                  pushLog(`🧸 The substitute took ${res.damage} damage for ${defender.nickname}!`);
                 }
                 return;
               }
@@ -1621,6 +1795,14 @@ export const resolveTurnCore = (
               if (defender.currentHp <= 0) {
                 defender.isFainted = true;
                 pushLog(`${defender.nickname} fainted!`);
+                if (defender.isDestinyBond && attacker && !attacker.isFainted && attacker.instanceId !== defender.instanceId) {
+                  attacker.currentHp = 0;
+                  attacker.isFainted = true;
+                  pushLog(`👻 ${defender.nickname} took ${attacker.nickname} down with it via Destiny Bond!`, {
+                    kind: 'faint',
+                    id: attacker.instanceId
+                  });
+                }
                 // Moxie
                 if (attacker.ability === 'Moxie' && !attacker.isFainted) {
                   attacker.statStages.attack = Math.min(6, (attacker.statStages.attack || 0) + 1);
@@ -1697,6 +1879,24 @@ export const resolveTurnCore = (
           let targetSlotIdx = defenderActiveIndices[targetSlot] ?? defenderActiveIndices[0];
           let defender = defenderTeam[targetSlotIdx];
 
+          // Follow Me / Rage Powder redirection
+          if (format === 'Doubles') {
+            const redirectorIdx = defenderActiveIndices.find((idx) => {
+              const p = defenderTeam[idx];
+              if (!p || p.isFainted || p.currentHp <= 0 || !p.isFollowMeActive) return false;
+              if (p.lastUsedMoveId === 'rage_powder') {
+                const atkTypes = attacker.activeTypes || attacker.species.types;
+                if (atkTypes.includes('Grass') || attacker.item === 'safety_goggles') return false;
+              }
+              return true;
+            });
+            if (redirectorIdx !== undefined && redirectorIdx !== targetSlotIdx) {
+              targetSlotIdx = redirectorIdx;
+              defender = defenderTeam[targetSlotIdx];
+              pushLog(`${attacker.nickname}'s attack was redirected to ${defender.nickname}!`);
+            }
+          }
+
           // Mid-turn retargeting: if targeted enemy fainted mid-turn, redirect to remaining alive defender
           if ((!defender || defender.isFainted || defender.currentHp <= 0) && format === 'Doubles') {
             const alternateSlotIdx = defenderActiveIndices.find(
@@ -1727,9 +1927,56 @@ export const resolveTurnCore = (
               return;
             }
 
+            // Sucker Punch check: Fails if target already moved or selected non-damaging move
+            if (move.id === 'sucker_punch') {
+              const targetActIdx = allActions.findIndex((a) => a.actorTeamIndex === targetSlotIdx && a.isMyAction !== isMyAction);
+              const targetMovedAlready = targetActIdx !== -1 && executedActionIndices.has(targetActIdx);
+              const targetActionItem = targetActIdx !== -1 ? allActions[targetActIdx] : null;
+              const targetMoveObj = targetActionItem?.action.type === 'MOVE' && targetActionItem.action.moveId ? MOVES_DATABASE[targetActionItem.action.moveId] : null;
+              const isTargetAttacking = targetMoveObj && targetMoveObj.category !== 'Status';
+              if (targetMovedAlready || !isTargetAttacking) {
+                pushLog(`${attacker.nickname} used Sucker Punch... but it failed!`);
+                attacker.lastMoveFailed = true;
+                return;
+              }
+            }
+
+            // Protection check
             if (defender.isProtecting) {
-              pushLog(`🛡️ ${defender.nickname} protected itself!`);
-              return;
+              if (move.id === 'feint' || move.id === 'phantom_force') {
+                defender.isProtecting = false;
+                defender.protectType = undefined;
+                pushLog(`🛡️ ${defender.nickname}'s protection was broken by ${move.name}!`);
+              } else if (defender.protectType === 'wide_guard') {
+                // Wide Guard does not protect against single-target attacks!
+              } else {
+                if (move.id === 'high_jump_kick') {
+                  const crashDmg = Math.max(1, Math.floor(attacker.maxStats.hp / 2));
+                  attacker.currentHp = Math.max(0, attacker.currentHp - crashDmg);
+                  pushLog(`🛡️ ${defender.nickname} protected itself!`);
+                  pushLog(`💥 ${attacker.nickname} kept going and crashed! (-${crashDmg} HP)`);
+                  if (attacker.currentHp <= 0) {
+                    attacker.isFainted = true;
+                    pushLog(`${attacker.nickname} fainted!`);
+                  }
+                  attacker.lastMoveFailed = true;
+                  return;
+                }
+                if (defender.protectType === 'spiky_shield' && makesContact(move) && !attacker.isFainted) {
+                  const spikeDmg = Math.max(1, Math.floor(attacker.maxStats.hp / 8));
+                  attacker.currentHp = Math.max(0, attacker.currentHp - spikeDmg);
+                  pushLog(`🌵 ${attacker.nickname} was hurt by ${defender.nickname}'s Spiky Shield! (-${spikeDmg} HP)`);
+                  if (attacker.currentHp <= 0) {
+                    attacker.isFainted = true;
+                    pushLog(`${attacker.nickname} fainted!`);
+                  }
+                } else if (defender.protectType === 'kings_shield' && makesContact(move) && !attacker.isFainted) {
+                  applyStatStages(attacker, 'attack', -1);
+                }
+                pushLog(`🛡️ ${defender.nickname} protected itself!`);
+                attacker.lastMoveFailed = true;
+                return;
+              }
             }
 
             // Lightning Rod draws in single-target Electric moves
@@ -1777,213 +2024,387 @@ export const resolveTurnCore = (
 
             if (!checkMoveHit(move, attacker, defender)) {
               pushLog(`${attacker.nickname}'s attack missed ${defender.nickname}!`);
+              if (move.id === 'high_jump_kick') {
+                const crashDmg = Math.max(1, Math.floor(attacker.maxStats.hp / 2));
+                attacker.currentHp = Math.max(0, attacker.currentHp - crashDmg);
+                pushLog(`💥 ${attacker.nickname} kept going and crashed! (-${crashDmg} HP)`);
+                if (attacker.currentHp <= 0) {
+                  attacker.isFainted = true;
+                  pushLog(`${attacker.nickname} fainted!`);
+                }
+              }
+              attacker.lastMoveFailed = true;
               return;
             }
 
-            defender.timesHit = (defender.timesHit || 0) + 1;
-            const res = calculateDamage(attacker, defender, move, format, false, attackerTeam, isDefAuroraActive, defField);
+            const multiHitConfig = MULTI_HIT_CONFIGS[move.id];
+            const totalHitsToAttempt = multiHitConfig
+              ? (multiHitConfig.escalatingPower
+                  ? 3
+                  : multiHitConfig.maxHits === 2
+                  ? 2
+                  : multiHitConfig.maxHits === 10
+                  ? 10
+                  : attacker.item === 'loaded_dice'
+                  ? 4 + (Math.random() < 0.5 ? 1 : 0)
+                  : (() => { const r = Math.random(); return r < 0.35 ? 2 : r < 0.70 ? 3 : r < 0.85 ? 4 : 5; })())
+              : 1;
 
-            // Disguise Ability: Absorbs first damage hit
-            if (defender.ability === 'Disguise' && !defender.isDisguiseBusted && res.damage > 0 && attacker.ability !== 'Mold Breaker') {
-              defender.isDisguiseBusted = true;
-              const disguiseDamage = Math.max(1, Math.floor(defender.maxStats.hp / 8));
-              defender.currentHp = Math.max(0, defender.currentHp - disguiseDamage);
-              pushLog(`🎭 ${defender.nickname}'s Disguise absorbed the hit and was busted!`, {
-                kind: 'damage',
-                id: defender.instanceId,
-                amount: disguiseDamage
-              });
+            let hitsLanded = 0;
+            let totalDamageDealt = 0;
+
+            for (let hitNum = 1; hitNum <= totalHitsToAttempt; hitNum++) {
+              if (defender.isFainted || defender.currentHp <= 0) break;
+              if (hitNum > 1 && multiHitConfig?.perHitAccuracy) {
+                if (!checkMoveHit(move, attacker, defender)) break;
+              }
+
+              let currentMove = move;
+              if (multiHitConfig?.escalatingPower) {
+                currentMove = { ...move, power: multiHitConfig.escalatingPower[hitNum - 1] || move.power };
+              }
+
+              defender.timesHit = (defender.timesHit || 0) + 1;
+              const res = calculateDamage(attacker, defender, currentMove, format, false, attackerTeam, isDefAuroraActive, defField);
+
+              // Disguise Ability: Absorbs first damage hit
+              if (defender.ability === 'Disguise' && !defender.isDisguiseBusted && res.damage > 0 && attacker.ability !== 'Mold Breaker') {
+                defender.isDisguiseBusted = true;
+                const disguiseDamage = Math.max(1, Math.floor(defender.maxStats.hp / 8));
+                defender.currentHp = Math.max(0, defender.currentHp - disguiseDamage);
+                pushLog(`🎭 ${defender.nickname}'s Disguise absorbed the hit and was busted!`, {
+                  kind: 'damage',
+                  id: defender.instanceId,
+                  amount: disguiseDamage
+                });
+                hitsLanded++;
+                if (defender.currentHp <= 0) {
+                  defender.isFainted = true;
+                  pushLog(`${defender.nickname} fainted!`);
+                  break;
+                }
+                continue;
+              }
+
+              // Substitute Absorption
+              if (defender.substituteHp && defender.substituteHp > 0 && !SOUND_MOVES.has(move.id)) {
+                defender.substituteHp = Math.max(0, defender.substituteHp - res.damage);
+                hitsLanded++;
+                if (defender.substituteHp <= 0) {
+                  defender.substituteHp = undefined;
+                  pushLog(`🧸 The substitute took damage for ${defender.nickname} and faded!`);
+                } else {
+                  pushLog(`🧸 The substitute took ${res.damage} damage for ${defender.nickname}!`);
+                }
+                continue;
+              }
+
+              const isFullHp = defender.currentHp === defender.maxStats.hp;
+              const prevDefenderHp = defender.currentHp;
+              defender.currentHp = Math.max(0, defender.currentHp - res.damage);
+              totalDamageDealt += res.damage;
+              hitsLanded++;
+
+              const hasSturdy = defender.ability === 'Sturdy' && attacker.ability !== 'Mold Breaker';
+              if (defender.currentHp <= 0 && isFullHp) {
+                if (hasSturdy) {
+                  defender.currentHp = 1;
+                  pushLog(`🛡️ ${defender.nickname} endured the hit with Sturdy!`, { kind: 'ability', id: defender.instanceId });
+                } else if (defender.item === 'focus_sash' && !defender.itemConsumed) {
+                  defender.currentHp = 1;
+                  defender.itemConsumed = true;
+                  pushLog(`${defender.nickname} hung on using its Focus Sash!`);
+                }
+              }
+
+              if (!multiHitConfig && res.description) pushLog(res.description);
+              pushLog(`${defender.nickname} took ${res.damage} damage!`, { kind: 'damage', id: defender.instanceId, amount: res.damage });
+
+              // Stamina Ability
+              if (defender.ability === 'Stamina' && defender.currentHp > 0 && res.damage > 0) {
+                const curDef = defender.statStages.defense || 0;
+                if (curDef < 6) {
+                  defender.statStages.defense = curDef + 1;
+                  pushLog(`🛡️ ${defender.nickname}'s Stamina boosted its Defense!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'defense' });
+                }
+              }
+
+              // Weak Armor
+              if (defender.ability === 'Weak Armor' && move.category === 'Physical' && defender.currentHp > 0 && res.damage > 0) {
+                defender.statStages.defense = Math.max(-6, (defender.statStages.defense || 0) - 1);
+                defender.statStages.speed = Math.min(6, (defender.statStages.speed || 0) + 2);
+                pushLog(`🛡️ ${defender.nickname}'s Weak Armor lowered Defense and sharply raised Speed!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'speed' });
+              }
+
+              // Thermal Exchange
+              if (defender.ability === 'Thermal Exchange' && move.type === 'Fire' && defender.currentHp > 0 && res.damage > 0) {
+                defender.statStages.attack = Math.min(6, (defender.statStages.attack || 0) + 1);
+                pushLog(`❄️ ${defender.nickname}'s Thermal Exchange boosted its Attack!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'attack' });
+              }
+
+              // Justified
+              if (defender.ability === 'Justified' && move.type === 'Dark' && defender.currentHp > 0 && res.damage > 0) {
+                defender.statStages.attack = Math.min(6, (defender.statStages.attack || 0) + 1);
+                pushLog(`⚔️ ${defender.nickname}'s Justified boosted its Attack!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'attack' });
+              }
+
+              // Berserk
+              if (defender.ability === 'Berserk' && defender.currentHp > 0 && prevDefenderHp > Math.floor(defender.maxStats.hp / 2) && defender.currentHp <= Math.floor(defender.maxStats.hp / 2) && res.damage > 0) {
+                defender.statStages.spAtk = Math.min(6, (defender.statStages.spAtk || 0) + 1);
+                pushLog(`🐉 ${defender.nickname}'s Berserk boosted its Sp. Atk!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'spAtk' });
+              }
+
+              // Toxic Debris
+              if (defender.ability === 'Toxic Debris' && move.category === 'Physical' && res.damage > 0) {
+                if (isMyAction) {
+                  const cur = activeField.toxicSpikesTeam1 || 0;
+                  if (cur < 2) {
+                    activeField.toxicSpikesTeam1 = cur + 1;
+                    pushLog(`☠️ ${defender.nickname}'s Toxic Debris scattered poison spikes on your team's field!`, { kind: 'field' });
+                  }
+                } else {
+                  const cur = activeField.toxicSpikesTeam2 || 0;
+                  if (cur < 2) {
+                    activeField.toxicSpikesTeam2 = cur + 1;
+                    pushLog(`☠️ ${defender.nickname}'s Toxic Debris scattered poison spikes on opposing team's field!`, { kind: 'field' });
+                  }
+                }
+              }
+
+              // Sitrus Berry
+              if (defender.currentHp > 0 && defender.currentHp <= Math.floor(defender.maxStats.hp / 2) && defender.item === 'sitrus_berry' && !defender.itemConsumed) {
+                defender.currentHp = Math.min(defender.maxStats.hp, defender.currentHp + Math.floor(defender.maxStats.hp / 4));
+                defender.itemConsumed = true;
+                pushLog(`🫐 ${defender.nickname} restored its health using its Sitrus Berry!`);
+              }
+
               if (defender.currentHp <= 0) {
                 defender.isFainted = true;
                 pushLog(`${defender.nickname} fainted!`);
+                if (defender.isDestinyBond && attacker && !attacker.isFainted && attacker.instanceId !== defender.instanceId) {
+                  attacker.currentHp = 0;
+                  attacker.isFainted = true;
+                  pushLog(`👻 ${defender.nickname} took ${attacker.nickname} down with it via Destiny Bond!`, {
+                    kind: 'faint',
+                    id: attacker.instanceId
+                  });
+                }
+                if (attacker.ability === 'Moxie' && !attacker.isFainted) {
+                  attacker.statStages.attack = Math.min(6, (attacker.statStages.attack || 0) + 1);
+                  pushLog(`🐉 ${attacker.nickname}'s Moxie boosted its Attack!`, { kind: 'stat', id: attacker.instanceId, dir: 'up', stat: 'attack' });
+                }
+                break;
               }
-              return;
             }
 
-            const isFullHp = defender.currentHp === defender.maxStats.hp;
-            const prevDefenderHp = defender.currentHp;
-            defender.currentHp = Math.max(0, defender.currentHp - res.damage);
+            if (multiHitConfig && hitsLanded > 0) {
+              pushLog(`Hit ${hitsLanded} time(s)!`);
+            }
 
-            const hasSturdy = defender.ability === 'Sturdy' && attacker.ability !== 'Mold Breaker';
-            if (defender.currentHp <= 0 && isFullHp) {
-              if (hasSturdy) {
-                defender.currentHp = 1;
-                pushLog(`🛡️ ${defender.nickname} endured the hit with Sturdy!`, { kind: 'ability', id: defender.instanceId });
-              } else if (defender.item === 'focus_sash' && !defender.itemConsumed) {
-                defender.currentHp = 1;
+            if (hitsLanded > 0) {
+              applyMoveSecondaryEffects(move, attacker, defender, totalDamageDealt);
+
+              // Scale Shot stat buffs/drops
+              if (move.id === 'scale_shot' && !attacker.isFainted) {
+                applyStatStages(attacker, 'defense', -1);
+                applyStatStages(attacker, 'speed', 1);
+              }
+
+              // Stone Axe: Sets Stealth Rock
+              if (move.id === 'stone_axe' && !attacker.isFainted) {
+                if (isMyAction) {
+                  if (!activeField.stealthRockTeam2) {
+                    activeField.stealthRockTeam2 = true;
+                    pushLog(`🪨 Pointed stones float in the air around the opposing team!`, { kind: 'field' });
+                  }
+                } else {
+                  if (!activeField.stealthRockTeam1) {
+                    activeField.stealthRockTeam1 = true;
+                    pushLog(`🪨 Pointed stones float in the air around your team!`, { kind: 'field' });
+                  }
+                }
+              }
+
+              // Ice Spinner: Clears Terrain
+              if (move.id === 'ice_spinner' && activeField.terrain && activeField.terrain !== 'None') {
+                activeField.terrain = 'None';
+                activeField.terrainTurns = 0;
+                pushLog(`❄️ The terrain was destroyed by Ice Spinner!`, { kind: 'field', field: { ...activeField } });
+              }
+
+              // Knock Off: Item removal
+              if (move.id === 'knock_off' && defender.item && !defender.itemConsumed && defender.item !== 'none') {
+                const isMegaStone = defender.item.endsWith('ite') || defender.item.endsWith('ite_x') || defender.item.endsWith('ite_y');
+                if (!isMegaStone) {
+                  const knocked = defender.item;
+                  defender.item = 'none';
+                  defender.itemConsumed = true;
+                  pushLog(`💥 ${attacker.nickname} knocked off ${defender.nickname}'s ${knocked}!`);
+                }
+              }
+
+              // Bug Bite: Berry consumption
+              if (move.id === 'bug_bite' && defender.item && !defender.itemConsumed && defender.item.includes('berry') && !attacker.isFainted) {
+                const berry = defender.item;
+                defender.item = 'none';
                 defender.itemConsumed = true;
-                pushLog(`${defender.nickname} hung on using its Focus Sash!`);
-              }
-            }
-
-            if (res.description) pushLog(res.description);
-            pushLog(`${defender.nickname} took ${res.damage} damage!`, { kind: 'damage', id: defender.instanceId, amount: res.damage });
-
-            // Stamina Ability: Boosts Defense by 1 when hit
-            if (defender.ability === 'Stamina' && defender.currentHp > 0 && res.damage > 0) {
-              const curDef = defender.statStages.defense || 0;
-              if (curDef < 6) {
-                defender.statStages.defense = curDef + 1;
-                pushLog(`🛡️ ${defender.nickname}'s Stamina boosted its Defense!`, {
-                  kind: 'stat',
-                  id: defender.instanceId,
-                  dir: 'up',
-                  stat: 'defense'
+                const healAmt = Math.max(1, Math.floor(attacker.maxStats.hp / 4));
+                attacker.currentHp = Math.min(attacker.maxStats.hp, attacker.currentHp + healAmt);
+                pushLog(`🐛 ${attacker.nickname} stole and ate ${defender.nickname}'s ${berry}! (+${healAmt} HP)`, {
+                  kind: 'heal',
+                  id: attacker.instanceId,
+                  amount: healAmt
                 });
               }
-            }
 
-            // Weak Armor: -1 Def, +2 Spe on physical hit
-            if (defender.ability === 'Weak Armor' && move.category === 'Physical' && defender.currentHp > 0 && res.damage > 0) {
-              defender.statStages.defense = Math.max(-6, (defender.statStages.defense || 0) - 1);
-              defender.statStages.speed = Math.min(6, (defender.statStages.speed || 0) + 2);
-              pushLog(`🛡️ ${defender.nickname}'s Weak Armor lowered Defense and sharply raised Speed!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'speed' });
-            }
+              // Sparkling Aria: Cures Burn
+              if (move.id === 'sparkling_aria' && defender.status === 'Burn' && !defender.isFainted) {
+                defender.status = undefined;
+                pushLog(`💧 ${defender.nickname}'s burn was cured by Sparkling Aria!`, { kind: 'status', id: defender.instanceId });
+              }
 
-            // Thermal Exchange: +1 Atk on Fire hit
-            if (defender.ability === 'Thermal Exchange' && move.type === 'Fire' && defender.currentHp > 0 && res.damage > 0) {
-              defender.statStages.attack = Math.min(6, (defender.statStages.attack || 0) + 1);
-              pushLog(`❄️ ${defender.nickname}'s Thermal Exchange boosted its Attack!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'attack' });
-            }
+              // Dire Claw: 50% random status
+              if (move.id === 'dire_claw' && !defender.status && !defender.isFainted && Math.random() < 0.5) {
+                const r = Math.random();
+                const eff: 'Poison' | 'Paralysis' | 'Sleep' = r < 0.4 ? 'Poison' : r < 0.7 ? 'Paralysis' : 'Sleep';
+                defender.status = eff;
+                pushLog(`✨ Dire Claw afflicted ${defender.nickname} with ${eff}!`, { kind: 'status', id: defender.instanceId });
+              }
 
-            // Justified: +1 Atk on Dark hit
-            if (defender.ability === 'Justified' && move.type === 'Dark' && defender.currentHp > 0 && res.damage > 0) {
-              defender.statStages.attack = Math.min(6, (defender.statStages.attack || 0) + 1);
-              pushLog(`⚔️ ${defender.nickname}'s Justified boosted its Attack!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'attack' });
-            }
+              // Throat Chop: 2-turn sound move seal
+              if (move.id === 'throat_chop' && !defender.isFainted) {
+                defender.throatChopTurns = 2;
+                pushLog(`🔇 ${defender.nickname} cannot use sound moves for 2 turns!`);
+              }
 
-            // Berserk: +1 Sp. Atk when HP drops below 50%
-            if (defender.ability === 'Berserk' && defender.currentHp > 0 && prevDefenderHp > Math.floor(defender.maxStats.hp / 2) && defender.currentHp <= Math.floor(defender.maxStats.hp / 2) && res.damage > 0) {
-              defender.statStages.spAtk = Math.min(6, (defender.statStages.spAtk || 0) + 1);
-              pushLog(`🐉 ${defender.nickname}'s Berserk boosted its Sp. Atk!`, { kind: 'stat', id: defender.instanceId, dir: 'up', stat: 'spAtk' });
-            }
-
-            // Toxic Debris: Scatters Toxic Spikes when hit by physical attack
-            if (defender.ability === 'Toxic Debris' && move.category === 'Physical' && res.damage > 0) {
-              if (isMyAction) {
-                const cur = activeField.toxicSpikesTeam1 || 0;
-                if (cur < 2) {
-                  activeField.toxicSpikesTeam1 = cur + 1;
-                  pushLog(`☠️ ${defender.nickname}'s Toxic Debris scattered poison spikes on your team's field!`, { kind: 'field' });
-                }
-              } else {
-                const cur = activeField.toxicSpikesTeam2 || 0;
-                if (cur < 2) {
-                  activeField.toxicSpikesTeam2 = cur + 1;
-                  pushLog(`☠️ ${defender.nickname}'s Toxic Debris scattered poison spikes on opposing team's field!`, { kind: 'field' });
+              // Hazard clearing with Mortal Spin / Rapid Spin
+              if ((move.id === 'mortal_spin' || move.id === 'rapid_spin') && !attacker.isFainted) {
+                if (isMyAction) {
+                  if (activeField.stealthRockTeam1 || activeField.toxicSpikesTeam1) {
+                    activeField.stealthRockTeam1 = false;
+                    activeField.toxicSpikesTeam1 = 0;
+                    pushLog(`🌪️ ${attacker.nickname} blew away entry hazards from your team's field!`, { kind: 'field' });
+                  }
+                } else {
+                  if (activeField.stealthRockTeam2 || activeField.toxicSpikesTeam2) {
+                    activeField.stealthRockTeam2 = false;
+                    activeField.toxicSpikesTeam2 = 0;
+                    pushLog(`🌪️ ${attacker.nickname} blew away entry hazards from opposing team's field!`, { kind: 'field' });
+                  }
                 }
               }
-            }
-            
-            if (defender.currentHp > 0 && defender.currentHp <= Math.floor(defender.maxStats.hp / 2) && defender.item === 'sitrus_berry' && !defender.itemConsumed) {
-              defender.currentHp = Math.min(defender.maxStats.hp, defender.currentHp + Math.floor(defender.maxStats.hp / 4));
-              defender.itemConsumed = true;
-              pushLog(`🫐 ${defender.nickname} restored its health using its Sitrus Berry!`);
-            }
 
-            applyMoveSecondaryEffects(move, attacker, defender, res.damage);
-
-            // Hazard clearing with Mortal Spin / Rapid Spin
-            if ((move.id === 'mortal_spin' || move.id === 'rapid_spin') && !attacker.isFainted) {
-              if (isMyAction) {
-                if (activeField.stealthRockTeam1 || activeField.toxicSpikesTeam1) {
-                  activeField.stealthRockTeam1 = false;
-                  activeField.toxicSpikesTeam1 = 0;
-                  pushLog(`🌪️ ${attacker.nickname} blew away entry hazards from your team's field!`, { kind: 'field' });
-                }
-              } else {
-                if (activeField.stealthRockTeam2 || activeField.toxicSpikesTeam2) {
-                  activeField.stealthRockTeam2 = false;
-                  activeField.toxicSpikesTeam2 = 0;
-                  pushLog(`🌪️ ${attacker.nickname} blew away entry hazards from opposing team's field!`, { kind: 'field' });
+              // Recoil damage calculation (Rock Head blocks recoil)
+              if (move.recoilPercent && totalDamageDealt > 0 && !attacker.isFainted) {
+                if (attacker.ability === 'Rock Head') {
+                  pushLog(`🛡️ ${attacker.nickname}'s Rock Head protected it from recoil!`, { kind: 'ability', id: attacker.instanceId });
+                } else {
+                  const recoilDamage = Math.max(1, Math.floor((totalDamageDealt * move.recoilPercent) / 100));
+                  attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage);
+                  pushLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
+                  if (attacker.currentHp <= 0) {
+                    attacker.isFainted = true;
+                    pushLog(`${attacker.nickname} fainted from recoil!`);
+                  }
                 }
               }
-            }
 
-            if (defender.currentHp <= 0) {
-              defender.isFainted = true;
-              pushLog(`${defender.nickname} fainted!`);
-              // Moxie
-              if (attacker.ability === 'Moxie' && !attacker.isFainted) {
-                attacker.statStages.attack = Math.min(6, (attacker.statStages.attack || 0) + 1);
-                pushLog(`🐉 ${attacker.nickname}'s Moxie boosted its Attack!`, { kind: 'stat', id: attacker.instanceId, dir: 'up', stat: 'attack' });
-              }
-            }
-
-            // Recoil damage calculation (Rock Head blocks recoil)
-            if (move.recoilPercent && res.damage > 0 && !attacker.isFainted) {
-              if (attacker.ability === 'Rock Head') {
-                pushLog(`🛡️ ${attacker.nickname}'s Rock Head protected it from recoil!`, { kind: 'ability', id: attacker.instanceId });
-              } else {
-                const recoilDamage = Math.max(1, Math.floor((res.damage * move.recoilPercent) / 100));
-                attacker.currentHp = Math.max(0, attacker.currentHp - recoilDamage);
-                pushLog(`${attacker.nickname} took ${recoilDamage} recoil damage!`);
-                if (attacker.currentHp <= 0) {
-                  attacker.isFainted = true;
-                  pushLog(`${attacker.nickname} fainted from recoil!`);
+              // Contact Retaliation abilities (Rough Skin, Flame Body, Static) and Rocky Helmet
+              if (totalDamageDealt > 0 && !attacker.isFainted && makesContact(move)) {
+                if (defender.item === 'rocky_helmet') {
+                  const rockyDamage = Math.max(1, Math.floor(attacker.maxStats.hp / 6));
+                  attacker.currentHp = Math.max(0, attacker.currentHp - rockyDamage);
+                  pushLog(`💥 ${attacker.nickname} was hurt by ${defender.nickname}'s Rocky Helmet!`);
+                  if (attacker.currentHp <= 0) {
+                    attacker.isFainted = true;
+                    pushLog(`${attacker.nickname} fainted!`);
+                  }
+                }
+                if (defender.ability === 'Rough Skin' && !attacker.isFainted) {
+                  const roughDamage = Math.max(1, Math.floor(attacker.maxStats.hp / 8));
+                  attacker.currentHp = Math.max(0, attacker.currentHp - roughDamage);
+                  pushLog(`💥 ${attacker.nickname} was hurt by ${defender.nickname}'s Rough Skin!`);
+                  if (attacker.currentHp <= 0) {
+                    attacker.isFainted = true;
+                    pushLog(`${attacker.nickname} fainted!`);
+                  }
+                }
+                if (defender.ability === 'Flame Body' && !attacker.isFainted && !attacker.status && Math.random() < 0.3) {
+                  attacker.status = 'Burn';
+                  pushLog(`🔥 ${defender.nickname}'s Flame Body burned ${attacker.nickname}!`, { kind: 'status', id: attacker.instanceId });
+                }
+                if (defender.ability === 'Static' && !attacker.isFainted && !attacker.status && Math.random() < 0.3) {
+                  attacker.status = 'Paralysis';
+                  pushLog(`⚡ ${defender.nickname}'s Static paralyzed ${attacker.nickname}!`, { kind: 'status', id: attacker.instanceId });
+                }
+                if (attacker.ability === 'Poison Touch' && !defender.isFainted && !defender.status && Math.random() < 0.3) {
+                  defender.status = 'Poison';
+                  pushLog(`☠️ ${attacker.nickname}'s Poison Touch poisoned ${defender.nickname}!`, { kind: 'status', id: defender.instanceId });
                 }
               }
-            }
 
-            // Contact Retaliation abilities (Rough Skin, Flame Body, Static) and Rocky Helmet
-            if (res.damage > 0 && !attacker.isFainted && makesContact(move)) {
-              if (defender.item === 'rocky_helmet') {
-                const rockyDamage = Math.max(1, Math.floor(attacker.maxStats.hp / 6));
-                attacker.currentHp = Math.max(0, attacker.currentHp - rockyDamage);
-                pushLog(`💥 ${attacker.nickname} was hurt by ${defender.nickname}'s Rocky Helmet!`);
-                if (attacker.currentHp <= 0) {
-                  attacker.isFainted = true;
-                  pushLog(`${attacker.nickname} fainted!`);
-                }
+              // Cursed Body
+              if (totalDamageDealt > 0 && defender.ability === 'Cursed Body' && !attacker.disabledMoveId && Math.random() < 0.3) {
+                attacker.disabledMoveId = move.id;
+                attacker.disabledMoveTurns = 4;
+                pushLog(`👻 ${defender.nickname}'s Cursed Body disabled ${attacker.nickname}'s ${move.name}!`, { kind: 'ability', id: defender.instanceId });
               }
-              if (defender.ability === 'Rough Skin' && !attacker.isFainted) {
-                const roughDamage = Math.max(1, Math.floor(attacker.maxStats.hp / 8));
-                attacker.currentHp = Math.max(0, attacker.currentHp - roughDamage);
-                pushLog(`💥 ${attacker.nickname} was hurt by ${defender.nickname}'s Rough Skin!`);
-                if (attacker.currentHp <= 0) {
-                  attacker.isFainted = true;
-                  pushLog(`${attacker.nickname} fainted!`);
-                }
-              }
-              if (defender.ability === 'Flame Body' && !attacker.isFainted && !attacker.status && Math.random() < 0.3) {
+
+              // Spicy Spray ability
+              if (defender.ability === 'Spicy Spray' && totalDamageDealt > 0 && !attacker.isFainted && !attacker.status) {
                 attacker.status = 'Burn';
-                pushLog(`🔥 ${defender.nickname}'s Flame Body burned ${attacker.nickname}!`, { kind: 'status', id: attacker.instanceId });
+                pushLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
               }
-              if (defender.ability === 'Static' && !attacker.isFainted && !attacker.status && Math.random() < 0.3) {
-                attacker.status = 'Paralysis';
-                pushLog(`⚡ ${defender.nickname}'s Static paralyzed ${attacker.nickname}!`, { kind: 'status', id: attacker.instanceId });
-              }
-              if (attacker.ability === 'Poison Touch' && !defender.isFainted && !defender.status && Math.random() < 0.3) {
-                defender.status = 'Poison';
-                pushLog(`☠️ ${attacker.nickname}'s Poison Touch poisoned ${defender.nickname}!`, { kind: 'status', id: defender.instanceId });
-              }
-            }
 
-            // Cursed Body
-            if (res.damage > 0 && defender.ability === 'Cursed Body' && !attacker.disabledMoveId && Math.random() < 0.3) {
-              attacker.disabledMoveId = move.id;
-              attacker.disabledMoveTurns = 4;
-              pushLog(`👻 ${defender.nickname}'s Cursed Body disabled ${attacker.nickname}'s ${move.name}!`, { kind: 'ability', id: defender.instanceId });
-            }
-
-            // Spicy Spray ability (burns attacker when hit)
-            if (defender.ability === 'Spicy Spray' && res.damage > 0 && !attacker.isFainted && !attacker.status) {
-              attacker.status = 'Burn';
-              pushLog(`🌶️ ${defender.nickname}'s Spicy Spray burned ${attacker.nickname}!`);
+              // Pivot moves: U-turn, Flip Turn, Volt Switch
+              if ((move.id === 'u_turn' || move.id === 'flip_turn' || move.id === 'volt_switch') && !attacker.isFainted && attacker.currentHp > 0) {
+                const benchIdx = attackerTeam.findIndex(
+                  (p, i) => !attackerActiveIndices.includes(i) && !p.isFainted && p.currentHp > 0
+                );
+                if (benchIdx !== -1) {
+                  const slotPos = attackerActiveIndices.indexOf(actorTeamIndex);
+                  const newPkmn = attackerTeam[benchIdx];
+                  if (slotPos !== -1 && newPkmn) {
+                    attackerActiveIndices[slotPos] = benchIdx;
+                    resetVolatileStatus(attacker);
+                    newPkmn.turnsOnField = 0;
+                    newPkmn.proteanUsed = false;
+                    pushLog(`🔄 ${attacker.nickname} pivoted and switched to ${newPkmn.nickname}!`);
+                    activeField = applyEntranceHazards(newPkmn, activeField, isMyAction, pushLog);
+                    if (!newPkmn.isFainted) {
+                      const foes = defenderActiveIndices
+                        .map((i) => defenderTeam[i])
+                        .filter((f) => f && !f.isFainted && f.currentHp > 0);
+                      const allies = attackerActiveIndices
+                        .map((i) => attackerTeam[i])
+                        .filter((a) => a && !a.isFainted && a.currentHp > 0);
+                      activeField = checkEntranceAbilities(newPkmn, activeField, pushLog, foes, allies);
+                    }
+                  }
+                }
+              }
             }
           }
         }
       }
     });
 
-    // Clear single-turn temporary flags (protect, flinch)
+    // Clear single-turn temporary flags (protect, flinch, helping hand, follow me, destiny bond)
     nextMyTeam.forEach((p) => {
       p.isProtecting = false;
+      p.protectType = undefined;
       p.isFlinched = false;
+      p.isHelpingHandActive = false;
+      p.isFollowMeActive = false;
+      p.isDestinyBond = false;
     });
     nextOppTeam.forEach((p) => {
       p.isProtecting = false;
+      p.protectType = undefined;
       p.isFlinched = false;
+      p.isHelpingHandActive = false;
+      p.isFollowMeActive = false;
+      p.isDestinyBond = false;
     });
 
     // Increment turns on field for active Pokemon
@@ -2067,6 +2488,64 @@ export const resolveTurnCore = (
           if (pkmn.disabledMoveTurns === 0) {
             pkmn.disabledMoveId = undefined;
             pushLog(`🔓 ${pkmn.nickname} is no longer disabled!`);
+          }
+        }
+
+        // Leech Seed drain (1/8 max HP)
+        if (pkmn.isSeeded && !pkmn.isFainted && pkmn.currentHp > 0) {
+          const leechDmg = Math.max(1, Math.floor(pkmn.maxStats.hp / 8));
+          pkmn.currentHp = Math.max(0, pkmn.currentHp - leechDmg);
+          pushLog(`🌱 ${pkmn.nickname}'s health is sapped by Leech Seed! (-${leechDmg} HP)`);
+
+          const recipientTeam = pkmn.seededBySide === 'my' ? nextMyTeam : nextOppTeam;
+          const recipientSlots = pkmn.seededBySide === 'my' ? hostActiveSlots : guestActiveSlots;
+          const recipient = recipientSlots.map((s) => recipientTeam[s]).find((p) => p && !p.isFainted && p.currentHp > 0);
+          if (recipient && recipient.currentHp < recipient.maxStats.hp) {
+            const healAmount = Math.min(recipient.maxStats.hp - recipient.currentHp, leechDmg);
+            recipient.currentHp += healAmount;
+            pushLog(`🌱 Leech Seed restored ${recipient.nickname}'s HP! (+${healAmount} HP)`);
+          }
+
+          if (pkmn.currentHp <= 0) {
+            pkmn.isFainted = true;
+            pushLog(`${pkmn.nickname} fainted from Leech Seed!`);
+          }
+        }
+
+        // Perish Song countdown
+        if (pkmn.perishCount !== undefined && !pkmn.isFainted && pkmn.currentHp > 0) {
+          pkmn.perishCount -= 1;
+          pushLog(`🎵 ${pkmn.nickname}'s perish count fell to ${pkmn.perishCount}!`);
+          if (pkmn.perishCount <= 0) {
+            pkmn.currentHp = 0;
+            pkmn.isFainted = true;
+            pkmn.perishCount = undefined;
+            pushLog(`💀 ${pkmn.nickname} fainted from Perish Song!`, { kind: 'faint', id: pkmn.instanceId });
+          }
+        }
+
+        // Decrement Taunt
+        if (pkmn.tauntTurns && pkmn.tauntTurns > 0) {
+          pkmn.tauntTurns -= 1;
+          if (pkmn.tauntTurns === 0) {
+            pushLog(`🕊️ ${pkmn.nickname}'s taunt wore off!`);
+          }
+        }
+
+        // Decrement Throat Chop
+        if (pkmn.throatChopTurns && pkmn.throatChopTurns > 0) {
+          pkmn.throatChopTurns -= 1;
+          if (pkmn.throatChopTurns === 0) {
+            pushLog(`🗣️ ${pkmn.nickname} can use sound moves again!`);
+          }
+        }
+
+        // Decrement Encore
+        if (pkmn.encoreTurns && pkmn.encoreTurns > 0) {
+          pkmn.encoreTurns -= 1;
+          if (pkmn.encoreTurns === 0) {
+            pkmn.encoreMoveId = undefined;
+            pushLog(`👏 ${pkmn.nickname}'s encore ended!`);
           }
         }
       }

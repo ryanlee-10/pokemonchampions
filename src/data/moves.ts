@@ -235,7 +235,8 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 8,
     category: 'Special',
     target: 'SingleEnemy',
-    description: 'Fires powerful beam of Eternal Flower energy.'
+    recoilPercent: 50,
+    description: 'Fires powerful beam of Eternal Flower energy. Takes 50% recoil damage.'
   },
   matcha_gotcha: {
     id: 'matcha_gotcha',
@@ -247,6 +248,9 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 24,
     category: 'Special',
     target: 'SpreadEnemies',
+    drainPercent: 50,
+    statusEffect: 'Burn',
+    statusChance: 20,
     description: 'Fires boiling tea hitting all foes. Heals user and may burn.'
   },
   head_smash: {
@@ -259,8 +263,8 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 8,
     category: 'Physical',
     target: 'SingleEnemy',
-    description: 'Life-risking headbutt with massive power. Takes 1/3 recoil damage.',
-    recoilPercent: 33
+    description: 'Life-risking headbutt with massive power. Takes 1/2 recoil damage.',
+    recoilPercent: 50
   },
   armor_cannon: {
     id: 'armor_cannon',
@@ -771,6 +775,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 8,
     category: 'Physical',
     target: 'SingleEnemy',
+    highCritRatio: true,
     description: 'Stabs target with sharp stones. High critical hit ratio.'
   },
   dragon_claw: {
@@ -807,6 +812,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 16,
     category: 'Special',
     target: 'SingleEnemy',
+    statChanges: [{ stat: 'spDef', stages: -1, chance: 10, target: 'Target' }],
     description: 'Strong telekinetic force. May lower Sp. Def.'
   },
   psyshock: {
@@ -831,6 +837,7 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 16,
     category: 'Special',
     target: 'SingleEnemy',
+    statChanges: [{ stat: 'spDef', stages: -1, chance: 10, target: 'Target' }],
     description: 'Vibrates wings to generate sound wave. May lower Sp. Def.'
   },
   sludge_bomb: {
@@ -843,6 +850,8 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 16,
     category: 'Special',
     target: 'SingleEnemy',
+    statusEffect: 'Poison',
+    statusChance: 30,
     description: 'Unsanitary sludge hurled at target. May poison.'
   },
   gunk_shot: {
@@ -855,6 +864,8 @@ export const MOVES_DATABASE: Record<string, Move> = {
     maxPp: 8,
     category: 'Physical',
     target: 'SingleEnemy',
+    statusEffect: 'Poison',
+    statusChance: 30,
     description: 'Shoots filthy garbage at target. May poison.'
   },
 

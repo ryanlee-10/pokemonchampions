@@ -13,6 +13,42 @@ import { BattleSidebar } from './BattleSidebar';
 import { BattleProjectile, type ProjectileState } from './BattleProjectile';
 import { WeatherLayer, TerrainLayer, FieldBadge } from './FieldEffects';
 import { MOVES_DATABASE } from '../data/moves';
+import { useAppStore } from '../app/store';
+
+export const ARENA_THEMES: Record<string, { name: string; file: string; glow: string }> = {
+  'Cyber Arena': {
+    name: 'Cyber Arena',
+    file: '/bgs/cyber_arena.jpg',
+    glow: '#00f2fe'
+  },
+  'Volcano Colosseum': {
+    name: 'Volcano Colosseum',
+    file: '/bgs/volcano_colosseum.jpg',
+    glow: '#ff4b2b'
+  },
+  'Aurora Glacier': {
+    name: 'Aurora Glacier',
+    file: '/bgs/aurora_glacier.jpg',
+    glow: '#00e5ff'
+  },
+  'Celestial Temple': {
+    name: 'Celestial Temple',
+    file: '/bgs/celestial_temple.jpg',
+    glow: '#ffd200'
+  },
+  'Emerald Grove': {
+    name: 'Emerald Grove',
+    file: '/bgs/emerald_grove.jpg',
+    glow: '#00ff88'
+  }
+};
+
+const ALL_ARENA_KEYS = Object.keys(ARENA_THEMES);
+const getDeterministicArena = (seed: string) => {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash << 5) - hash + seed.charCodeAt(i);
+  return ALL_ARENA_KEYS[Math.abs(hash) % ALL_ARENA_KEYS.length];
+};
 
 export interface BattleViewProps {
   format: string;
@@ -107,6 +143,10 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
   const [concedeOpen, setConcedeOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [timeLeft, setTimeLeft] = useState(MOVE_TIME);
+
+  const arenaThemeSetting = useAppStore((s) => s.settings.arenaTheme) || 'Random';
+  const effectiveTheme = arenaThemeSetting === 'Random' ? getDeterministicArena(roomId || 'champion') : arenaThemeSetting;
+  const currentArena = ARENA_THEMES[effectiveTheme] || ARENA_THEMES['Cyber Arena'];
 
   // Stable cinematic battle camera with tactile impact screen shake
   const [projectileState, setProjectileState] = useState<ProjectileState | null>(null);
@@ -278,13 +318,10 @@ export const BattleView: React.FC<BattleViewProps> = (props) => {
       <div className={`bv-camera-rig ${screenShake ? 'shake' : ''}`}>
         {/* Arena Stage */}
         <div className="bv-stage" aria-hidden>
-          <div className="ar-sky" />
-          <div className="ar-clouds" />
-          <div className="ar-stands" />
-          <div className="ar-ground" />
-          <div className="ar-lines" />
-          <div className="ar-pad ar-pad-opp" />
-          <div className="ar-pad ar-pad-my" />
+          <div className="ar-backdrop" style={{ backgroundImage: `url(${currentArena.file})` }} />
+          <div className="ar-overlay" />
+          <div className="ar-pad ar-pad-opp" style={{ '--glow': currentArena.glow } as React.CSSProperties} />
+          <div className="ar-pad ar-pad-my" style={{ '--glow': currentArena.glow } as React.CSSProperties} />
           <TerrainLayer terrain={fieldConditions.terrain} />
         </div>
 

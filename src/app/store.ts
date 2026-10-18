@@ -14,6 +14,7 @@ export interface Settings {
   autoSkipAnimations: boolean;
   cpuTimer: boolean;
   showDamagePercent: boolean;
+  arenaTheme: 'Random' | 'Cyber Arena' | 'Volcano Colosseum' | 'Aurora Glacier' | 'Celestial Temple' | 'Emerald Grove';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -29,6 +30,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoSkipAnimations: false,
   cpuTimer: true,
   showDamagePercent: true,
+  arenaTheme: 'Random',
 };
 
 export const SETTING_PRESETS: Record<string, Settings> = {

@@ -39,6 +39,43 @@ export function calculateDamage(
     return { damage: 0, isCrit: false, effectiveness: 1, randomRoll: 100, description: '' };
   }
 
+  const defenderTypes = defender.activeTypes || defender.species.types;
+
+  // Fixed / Formula Damage Moves
+  if (move.id === 'super_fang') {
+    const isImmune = defenderTypes.includes('Ghost') && attacker.ability !== 'Scrappy';
+    if (isImmune) {
+      return { damage: 0, isCrit: false, effectiveness: 0, randomRoll: 100, description: `It doesn't affect ${defender.nickname}...` };
+    }
+    const damage = Math.max(1, Math.floor(defender.currentHp / 2));
+    return { damage, isCrit: false, effectiveness: 1, randomRoll: 100, description: "Super Fang cut the target's HP in half!" };
+  }
+
+  if (move.id === 'endeavor') {
+    const isImmune = defenderTypes.includes('Ghost') && attacker.ability !== 'Scrappy';
+    if (isImmune) {
+      return { damage: 0, isCrit: false, effectiveness: 0, randomRoll: 100, description: `It doesn't affect ${defender.nickname}...` };
+    }
+    const damage = Math.max(0, defender.currentHp - attacker.currentHp);
+    return { damage, isCrit: false, effectiveness: 1, randomRoll: 100, description: damage > 0 ? "Endeavor matched the target's HP to user's!" : "Endeavor failed to reduce HP!" };
+  }
+
+  if (move.id === 'final_gambit') {
+    const isImmune = defenderTypes.includes('Ghost') && attacker.ability !== 'Scrappy';
+    if (isImmune) {
+      return { damage: 0, isCrit: false, effectiveness: 0, randomRoll: 100, description: `It doesn't affect ${defender.nickname}...` };
+    }
+    const damage = attacker.currentHp;
+    return { damage, isCrit: false, effectiveness: 1, randomRoll: 100, description: "Final Gambit dealt full remaining HP as damage!" };
+  }
+
+  if (move.id === 'fissure') {
+    if (!isGrounded(defender)) {
+      return { damage: 0, isCrit: false, effectiveness: 0, randomRoll: 100, description: `It doesn't affect ${defender.nickname}...` };
+    }
+    return { damage: defender.maxStats.hp, isCrit: false, effectiveness: 1, randomRoll: 100, description: "It's a one-hit KO!" };
+  }
+
   const isMoldBreaker = attacker.ability === 'Mold Breaker';
   const effectiveDefenderAbility = isMoldBreaker ? '' : defender.ability;
 
@@ -49,6 +86,26 @@ export function calculateDamage(
   const level = attacker.level || 50;
   let power = move.power;
   let moveType = move.type;
+
+  // Eruption: scales with attacker's current HP percentage
+  if (move.id === 'eruption') {
+    power = Math.max(1, Math.floor((150 * attacker.currentHp) / attacker.maxStats.hp));
+  }
+
+  // Knock Off: 1.5x power if defender has an active held item
+  if (move.id === 'knock_off' && defender.item && !defender.itemConsumed && defender.item !== 'none') {
+    power = Math.floor(power * 1.5);
+  }
+
+  // Stomping Tantrum: doubles in power (150) if user's last move failed
+  if (move.id === 'stomping_tantrum' && attacker.lastMoveFailed) {
+    power = Math.floor(power * 2);
+  }
+
+  // Helping Hand ally power boost
+  if (attacker.isHelpingHandActive) {
+    power = Math.floor(power * 1.5);
+  }
 
   // Type-changing abilities
   if (attacker.ability === 'Pixilate' && moveType === 'Normal') {
@@ -145,8 +202,28 @@ export function calculateDamage(
   let atkStatName: 'attack' | 'spAtk' = move.category === 'Physical' ? 'attack' : 'spAtk';
   let defStatName: 'defense' | 'spDef' = move.category === 'Physical' ? 'defense' : 'spDef';
 
+  // Psyshock: Special move that targets physical Defense
+  if (move.id === 'psyshock') {
+    defStatName = 'defense';
+  }
+
   let attackValue = attacker.maxStats[atkStatName] * getStatStageMultiplier(attacker.statStages[atkStatName]);
   let defenseValue = defender.maxStats[defStatName] * getStatStageMultiplier(defender.statStages[defStatName]);
+
+  // Body Press: Uses Defense stat and Defense stat stages for attacking
+  if (move.id === 'body_press') {
+    attackValue = attacker.maxStats.defense * getStatStageMultiplier(attacker.statStages.defense);
+  }
+
+  // Foul Play: Uses defender's Attack stat and defender's Attack stat stages
+  if (move.id === 'foul_play') {
+    attackValue = defender.maxStats.attack * getStatStageMultiplier(defender.statStages.attack);
+  }
+
+  // Sacred Sword & Darkest Lariat: Ignores defender's positive defense stat stages
+  if ((move.id === 'sacred_sword' || move.id === 'darkest_lariat') && (defender.statStages.defense || 0) > 0) {
+    defenseValue = defender.maxStats.defense;
+  }
 
   // Solar Power in Sun (Sp. Atk x1.5)
   if (effectiveWeather === 'Sun' && attacker.ability === 'Solar Power' && atkStatName === 'spAtk') {
@@ -236,8 +313,21 @@ export function calculateDamage(
   }
 
   // Step 6: Type Effectiveness Multiplier (0x, 0.25x, 0.5x, 1x, 2x, 4x)
-  const defenderTypes = defender.activeTypes || defender.species.types;
-  const effectiveness = getTypeEffectiveness(moveType, defenderTypes);
+  let effectiveness = getTypeEffectiveness(moveType, defenderTypes);
+  if (move.id === 'freeze_dry' && defenderTypes.includes('Water')) {
+    effectiveness *= 4;
+  }
+
+  // Type-resist Berries
+  const resistBerries: Record<string, string> = {
+    occa_berry: 'Fire', passho_berry: 'Water', wacan_berry: 'Electric', rindo_berry: 'Grass', yache_berry: 'Ice', chople_berry: 'Fighting', kebia_berry: 'Poison', shuca_berry: 'Ground', coba_berry: 'Flying', payapa_berry: 'Psychic', tanga_berry: 'Bug', charti_berry: 'Rock', kasib_berry: 'Ghost', haban_berry: 'Dragon', colbur_berry: 'Dark', babiri_berry: 'Steel', roseli_berry: 'Fairy'
+  };
+  let berryActivated = false;
+  if (effectiveness > 1 && resistBerries[defender.item] === moveType && !defender.itemConsumed) {
+    effectiveness = effectiveness * 0.5;
+    berryActivated = true;
+  }
+
   damage = Math.floor(damage * effectiveness);
 
   // Step 7: Burn Penalty (0.5x multiplier for physical attacks when burned)
@@ -302,6 +392,7 @@ export function calculateDamage(
   if (field?.terrain === 'Grassy' && moveType === 'Ground' && isGrounded(defender)) desc += ' (🌿 Halved by Grassy Terrain!)';
 
   if (isGlaiveVulnerableHit && effectiveness > 0) desc += ' (2x Glaive Rush Vulnerability!)';
+  if (berryActivated && effectiveness > 0) desc += ' (🫐 Berry halved damage!)';
   if (isCrit && effectiveness > 0) desc += ' A critical hit!';
 
   return {
@@ -356,6 +447,52 @@ export function calculateDamageSpread(
     };
   }
 
+  const defenderTypes = defender.activeTypes || defender.species.types;
+
+  // Fixed / Formula Damage Moves in Damage Spread
+  if (move.id === 'super_fang') {
+    const isImmune = defenderTypes.includes('Ghost') && attacker.ability !== 'Scrappy';
+    const dmg = isImmune ? 0 : Math.max(1, Math.floor(defender.currentHp / 2));
+    const pct = Math.round((dmg / defender.maxStats.hp) * 100);
+    return {
+      minDamage: dmg, maxDamage: dmg, rolls: new Array(16).fill(dmg), minPercent: pct, maxPercent: pct,
+      effectiveness: isImmune ? 0 : 1, ohkoChance: 0, twoHkoChance: 0, koVerdict: isImmune ? 'Immune (0%)' : `Guaranteed 50% current HP (${pct}%)`,
+      description: isImmune ? `It doesn't affect ${defender.nickname}...` : 'Halves current HP'
+    };
+  }
+
+  if (move.id === 'endeavor') {
+    const isImmune = defenderTypes.includes('Ghost') && attacker.ability !== 'Scrappy';
+    const dmg = isImmune ? 0 : Math.max(0, defender.currentHp - attacker.currentHp);
+    const pct = Math.round((dmg / defender.maxStats.hp) * 100);
+    return {
+      minDamage: dmg, maxDamage: dmg, rolls: new Array(16).fill(dmg), minPercent: pct, maxPercent: pct,
+      effectiveness: isImmune ? 0 : 1, ohkoChance: dmg >= defender.currentHp ? 100 : 0, twoHkoChance: 0,
+      koVerdict: `${pct}% max HP damage`, description: 'Matches HP'
+    };
+  }
+
+  if (move.id === 'final_gambit') {
+    const isImmune = defenderTypes.includes('Ghost') && attacker.ability !== 'Scrappy';
+    const dmg = isImmune ? 0 : attacker.currentHp;
+    const pct = Math.round((dmg / defender.maxStats.hp) * 100);
+    return {
+      minDamage: dmg, maxDamage: dmg, rolls: new Array(16).fill(dmg), minPercent: pct, maxPercent: pct,
+      effectiveness: isImmune ? 0 : 1, ohkoChance: dmg >= defender.currentHp ? 100 : 0, twoHkoChance: 0,
+      koVerdict: `${pct}% max HP damage`, description: 'Deals current HP'
+    };
+  }
+
+  if (move.id === 'fissure') {
+    const grounded = isGrounded(defender);
+    const dmg = grounded ? defender.maxStats.hp : 0;
+    return {
+      minDamage: dmg, maxDamage: dmg, rolls: new Array(16).fill(dmg), minPercent: grounded ? 100 : 0, maxPercent: grounded ? 100 : 0,
+      effectiveness: grounded ? 1 : 0, ohkoChance: grounded ? 100 : 0, twoHkoChance: 0, koVerdict: grounded ? 'OHKO (100%)' : 'Immune (0%)',
+      description: grounded ? 'One-hit KO' : `It doesn't affect ${defender.nickname}...`
+    };
+  }
+
   const isMoldBreaker = attacker.ability === 'Mold Breaker';
   const effectiveDefenderAbility = isMoldBreaker ? '' : defender.ability;
 
@@ -366,6 +503,26 @@ export function calculateDamageSpread(
   const level = attacker.level || 50;
   let power = move.power;
   let moveType = move.type;
+
+  // Eruption: scales with attacker's current HP percentage
+  if (move.id === 'eruption') {
+    power = Math.max(1, Math.floor((150 * attacker.currentHp) / attacker.maxStats.hp));
+  }
+
+  // Knock Off: 1.5x power if defender has an active held item
+  if (move.id === 'knock_off' && defender.item && !defender.itemConsumed && defender.item !== 'none') {
+    power = Math.floor(power * 1.5);
+  }
+
+  // Stomping Tantrum: doubles in power (150) if user's last move failed
+  if (move.id === 'stomping_tantrum' && attacker.lastMoveFailed) {
+    power = Math.floor(power * 2);
+  }
+
+  // Helping Hand ally power boost
+  if (attacker.isHelpingHandActive) {
+    power = Math.floor(power * 1.5);
+  }
 
   // Type-changing abilities
   if (attacker.ability === 'Pixilate' && moveType === 'Normal') {
@@ -435,10 +592,30 @@ export function calculateDamageSpread(
   if (field.terrain === 'Misty' && moveType === 'Dragon' && isGrounded(defender)) power = Math.floor(power * 0.5);
 
   const atkStatName: 'attack' | 'spAtk' = move.category === 'Physical' ? 'attack' : 'spAtk';
-  const defStatName: 'defense' | 'spDef' = move.category === 'Physical' ? 'defense' : 'spDef';
+  let defStatName: 'defense' | 'spDef' = move.category === 'Physical' ? 'defense' : 'spDef';
+
+  // Psyshock: Special move that targets physical Defense
+  if (move.id === 'psyshock') {
+    defStatName = 'defense';
+  }
 
   let attackValue = attacker.maxStats[atkStatName] * getStatStageMultiplier(attacker.statStages[atkStatName]);
   let defenseValue = defender.maxStats[defStatName] * getStatStageMultiplier(defender.statStages[defStatName]);
+
+  // Body Press: Uses Defense stat and Defense stat stages for attacking
+  if (move.id === 'body_press') {
+    attackValue = attacker.maxStats.defense * getStatStageMultiplier(attacker.statStages.defense);
+  }
+
+  // Foul Play: Uses defender's Attack stat and defender's Attack stat stages
+  if (move.id === 'foul_play') {
+    attackValue = defender.maxStats.attack * getStatStageMultiplier(defender.statStages.attack);
+  }
+
+  // Sacred Sword & Darkest Lariat: Ignores defender's positive defense stat stages
+  if ((move.id === 'sacred_sword' || move.id === 'darkest_lariat') && (defender.statStages.defense || 0) > 0) {
+    defenseValue = defender.maxStats.defense;
+  }
 
   // Solar Power in Sun (Sp. Atk x1.5)
   if (effectiveWeather === 'Sun' && attacker.ability === 'Solar Power' && atkStatName === 'spAtk') {
@@ -451,7 +628,6 @@ export function calculateDamageSpread(
   }
 
   // Weather defensive stat boosts
-  const defenderTypes = defender.activeTypes || defender.species.types;
   if (effectiveWeather === 'Sandstorm' && defStatName === 'spDef' && defenderTypes.includes('Rock')) {
     defenseValue = Math.floor(defenseValue * 1.5);
   }
@@ -511,6 +687,9 @@ export function calculateDamageSpread(
 
   // Type effectiveness
   let effectiveness = getTypeEffectiveness(moveType, defenderTypes);
+  if (move.id === 'freeze_dry' && defenderTypes.includes('Water')) {
+    effectiveness *= 4;
+  }
   
   // Type-resist Berries
   const resistBerries: Record<string, string> = {
